@@ -1,0 +1,1 @@
+"""Durable resume generation service."""
