@@ -1,7 +1,6 @@
 import copy
 import json
 import os
-import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -24,16 +23,8 @@ from app.worker import LostLease, _fence, claim_job, process_one, retry_job
 
 
 @pytest.fixture
-def workspace():
-    # All test artifacts stay under the repository, including SQLite databases.
-    root = Path("tests") / ".core-work" / str(uuid4())
-    root.mkdir(parents=True)
-    yield root
-    shutil.rmtree(root)
-    try:
-        root.parent.rmdir()
-    except OSError:
-        pass
+def workspace(tmp_path):
+    return tmp_path
 
 
 @pytest.fixture

@@ -80,7 +80,7 @@ resume-builder worker --once
 
 The default suite uses isolated SQLite files and mocked external providers.
 For PostgreSQL locking/concurrency coverage, export `CORE_TEST_DATABASE_URL`
-(a PostgreSQL SQLAlchemy URL) and `DATABASE_PASSWORD` for a disposable test
+(a PostgreSQL SQLAlchemy URL) and `CORE_TEST_DATABASE_PASSWORD` for a disposable test
 database, then run `python -m pytest`. Tests create and remove isolated schemas;
 the test role needs CREATE SCHEMA permission. Never point tests at an unrelated
 application database.
