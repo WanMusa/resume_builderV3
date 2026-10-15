@@ -18,7 +18,7 @@ from app.config import Settings
 from app.contracts import EnvelopeContract, JobContract
 from app.db import init_db, make_engine, make_session_factory
 from app.importer import EnvelopeValidationError, import_envelope, scan_inbox
-from app.models import Artifact, Batch, GeneratedDocument, Job, utcnow
+from app.models import Artifact, Batch, GeneratedDocument, Job, JobInput, utcnow
 from app.worker import LostLease, _fence, claim_job, process_one, retry_job
 
 
@@ -117,7 +117,8 @@ def test_defaults_and_postgres_models():
 
 def test_strict_contract_defaults(payload):
     job = JobContract.model_validate(payload["jobs"][0])
-    assert job.title is None and job.notes == [] and job.warnings == []
+    assert job.title is None and job.notes is None and job.warnings == []
+    assert job.requirements == [] and job.responsibilities == [] and job.skills == []
     assert job.extraction_mode == "raw"
     assert EnvelopeContract.model_validate(payload).exported_at is None
 
@@ -126,11 +127,26 @@ def test_strict_contract_defaults(payload):
     ("id", 42), ("site", False), ("description_text", None), ("captured_at", 42),
     ("source_url", "file:///etc/passwd"), ("source_url", "https:///missing-host"),
     ("captured_at", "2026-10-14"), ("title", 42), ("notes", ["ok", 12]),
+    ("extraction_mode", "other"), ("requirements", ["ok", 42]),
+    ("responsibilities", "wrong"), ("skills", [False]),
 ])
 def test_invalid_job_types(payload, field, value):
     payload["jobs"][0][field] = value
     with pytest.raises(ValidationError):
         JobContract.model_validate(payload["jobs"][0])
+
+
+def test_refined_contract_and_nullable_notes(payload):
+    job = payload["jobs"][0]
+    job.update(extraction_mode="llm_refined", notes="Review extraction",
+               requirements=["Five years experience"], responsibilities=["Build services"],
+               skills=["Python"], warnings=["Extraction needs review"])
+    validated = JobContract.model_validate(job)
+    assert validated.notes == "Review extraction"
+    assert validated.extraction_mode == "llm_refined"
+    assert validated.skills == ["Python"]
+    job["notes"] = None
+    assert JobContract.model_validate(job).notes is None
 
 
 @pytest.mark.parametrize("invalid", [
@@ -158,8 +174,31 @@ def test_partial_import_and_all_invalid(database, payload):
         assert batch.errors[0]["index"] == 1
         assert len(batch.jobs) == 1
         assert batch.jobs[0].payload["title"] is None
+        assert batch.jobs[0].input.payload == batch.jobs[0].payload
         with pytest.raises(EnvelopeValidationError):
             import_envelope(session, {"schema_version": 2, "jobs": [{}]}, "test")
+
+
+def test_validation_errors_do_not_persist_submitted_input(database, payload):
+    factory, settings = database
+    secret_input = {"private": "personal-secret-value"}
+    payload["jobs"].append({**payload["jobs"][0], "description_text": secret_input})
+    batch_id = intake(factory, payload)
+    with factory() as session:
+        errors = session.get(Batch, batch_id).errors
+        assert errors[0]["errors"][0]["loc"] == ["description_text"]
+        assert "personal-secret-value" not in json.dumps(errors)
+        assert "input" not in errors[0]["errors"][0]
+        with pytest.raises(EnvelopeValidationError) as exc:
+            import_envelope(session, {"schema_version": 2, "jobs": secret_input}, "test")
+        assert "personal-secret-value" not in str(exc.value)
+    settings.inbox_dir.mkdir()
+    (settings.inbox_dir / "invalid.json").write_text(json.dumps({
+        "schema_version": 2, "jobs": [{"description_text": secret_input}],
+    }))
+    scan_inbox(factory, settings)
+    errors_path = settings.inbox_dir / "quarantine" / "invalid.errors.json"
+    assert "personal-secret-value" not in errors_path.read_text()
 
 
 def test_deduplication_and_changed_revision(database, payload):
@@ -174,6 +213,8 @@ def test_deduplication_and_changed_revision(database, payload):
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(Job)) == 1
         assert session.get(Batch, first).jobs[0].id == session.get(Batch, second).jobs[0].id
+        snapshot = session.scalar(select(JobInput))
+        assert snapshot.payload["captured_at"] == payload["jobs"][0]["captured_at"]
     revised["jobs"][0]["description_text"] = "Build entirely different software."
     intake(factory, revised)
     with factory() as session:
@@ -195,6 +236,7 @@ def test_concurrent_import(database, payload):
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(Job)) == 1
         assert session.scalar(select(func.count()).select_from(Batch)) == 1
+        assert session.scalar(select(func.count()).select_from(JobInput)) == 1
 
 
 def test_scan_archives_partial_and_quarantines_invalid(database, payload):
@@ -260,6 +302,22 @@ def test_checkpoint_survives_render_failure(database, payload, pipeline, monkeyp
     assert calls["generation"] == 1
 
 
+def test_worker_error_does_not_persist_exception_response(database, payload, pipeline, monkeypatch):
+    factory, settings = database
+    intake(factory, payload)
+
+    def fail(payload, settings):
+        raise ValueError("provider response includes private-personal-content and secret-key")
+
+    monkeypatch.setattr("app.generation.generate_package", fail)
+    assert process_one(factory, settings)
+    job = get_job(factory)
+    assert job.status == "queued"
+    assert job.error == "ValueError: Job processing failed"
+    assert "private-personal-content" not in job.error
+    assert "secret-key" not in job.error
+
+
 def test_bounded_attempts_and_manual_retry(database, payload, pipeline, monkeypatch):
     factory, settings = database
     intake(factory, payload)
@@ -273,7 +331,7 @@ def test_bounded_attempts_and_manual_retry(database, payload, pipeline, monkeypa
     process_one(factory, settings)
     job = get_job(factory)
     assert job.status == "failed" and job.attempts == 2
-    assert "deterministic render error" in job.error
+    assert job.error == "RuntimeError: Job processing failed"
     assert not process_one(factory, settings)
     with factory() as session:
         retry_job(session, job.id)

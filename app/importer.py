@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.contracts import EnvelopeContract, JobContract
-from app.models import Batch, BatchJob, Job, new_id, utcnow
+from app.models import Batch, BatchJob, Job, JobInput, new_id, utcnow
 
 
 class EnvelopeValidationError(ValueError):
@@ -19,7 +19,7 @@ class EnvelopeValidationError(ValueError):
 
 
 def _errors(exc: ValidationError) -> list:
-    return exc.errors(include_url=False, include_context=False)
+    return exc.errors(include_url=False, include_context=False, include_input=False)
 
 
 def _normalize(value):
@@ -83,6 +83,9 @@ def import_envelope(session, payload: dict, source: str) -> Batch:
         job_id = session.scalar(select(Job.id).where(
             Job.external_id == external_id, Job.content_hash == revision_hash,
         ))
+        _insert_ignore(session, JobInput, {
+            "id": new_id(), "job_id": job_id, "payload": job, "created_at": utcnow(),
+        }, ["job_id"])
         _insert_ignore(session, BatchJob, {
             "batch_id": batch.id, "job_id": job_id,
         }, ["batch_id", "job_id"])
@@ -111,7 +114,9 @@ def scan_inbox(session_factory, settings) -> list[dict]:
                 result = {"file": str(path), "batch_id": batch.id, "status": batch.status, "errors": batch.errors}
             destination = archive / path.name
         except (EnvelopeValidationError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-            errors = exc.errors if isinstance(exc, EnvelopeValidationError) else [{"message": str(exc)}]
+            errors = exc.errors if isinstance(exc, EnvelopeValidationError) else [
+                {"message": "Invalid JSON file" if isinstance(exc, json.JSONDecodeError) else "JSON file is not valid UTF-8"}
+            ]
             result = {"file": str(path), "status": "quarantined", "errors": errors}
             destination = quarantine / path.name
         except OSError:

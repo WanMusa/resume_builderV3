@@ -35,7 +35,7 @@ class SupabaseStorage:
                f"{quote(settings.supabase_bucket, safe='')}/{quote(key, safe='/')}")
         with httpx.Client(timeout=60) as client:
             response = client.post(url, content=path.read_bytes(), headers={
-                "Authorization": f"******",
+                "Authorization": "Bearer" + " " + settings.supabase_key,
                 "apikey": settings.supabase_key,
                 "x-upsert": "true",
                 "Content-Type": "application/json" if path.suffix == ".json" else "text/markdown",

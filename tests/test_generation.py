@@ -106,6 +106,7 @@ def test_openai_validates_response_without_network(settings, job, monkeypatch):
     calls = []
 
     def post(self, url, **kwargs):
+        assert kwargs["headers"]["Authorization"].split() == ["Bearer", settings.openai_api_key]
         calls.append(kwargs["json"])
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({
             "summary": "Business analyst", "expertise_ids": ["skill-sql"],
@@ -138,3 +139,4 @@ def test_supabase_failure_is_sanitized_and_retry_key_stable(tmp_path, monkeypatc
         assert "sensitive" not in str(error.value)
     assert calls[0][0] == calls[1][0]
     assert calls[0][1]["headers"]["x-upsert"] == "true"
+    assert calls[0][1]["headers"]["Authorization"].split() == ["Bearer", settings.supabase_key]

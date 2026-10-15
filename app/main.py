@@ -36,7 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def authenticated(request: Request):
         if settings.api_token:
-            expected = f"******"
+            expected = "Bearer" + " " + settings.api_token
             if not secrets.compare_digest(request.headers.get("authorization", "").encode(),
                                           expected.encode()):
                 raise HTTPException(401, "Invalid bearer token", headers={"WWW-Authenticate": "Bearer"})

@@ -9,6 +9,7 @@ from app.db import init_db
 from app.main import MAX_UPLOAD_BYTES, create_app
 
 ROOT = Path(__file__).resolve().parents[1]
+HEADERS = {"Authorization": "Bearer" + " " + "test-token"}
 
 
 @pytest.fixture
@@ -24,7 +25,8 @@ def client(tmp_path):
 def test_health_auth_and_upload_visibility(client):
     assert client.get("/health").status_code == 200
     assert client.get("/jobs").status_code == 401
-    headers = {"Authorization": "******"}
+    headers = HEADERS
+    assert client.get("/jobs", headers={"Authorization": "Bearer" + " " + "wrong"}).status_code == 401
     payload = json.loads((ROOT / "examples/job-envelope.json").read_text())
     response = client.post("/batches", json=payload, headers=headers)
     assert response.status_code == 201
@@ -44,12 +46,12 @@ def test_health_auth_and_upload_visibility(client):
 
 
 def test_upload_errors_and_size_limit(client):
-    headers = {"Authorization": "******", "Content-Type": "application/json"}
+    headers = {**HEADERS, "Content-Type": "application/json"}
     assert client.post("/batches", content="{", headers=headers).status_code == 422
     assert client.post("/batches", json={"schema_version": 2}, headers=headers).status_code == 422
     assert client.post("/batches", content="x" * (MAX_UPLOAD_BYTES + 1),
                        headers=headers).status_code == 413
-    assert client.post("/batches", content="{}", headers={"Authorization": "******"}
+    assert client.post("/batches", content="{}", headers=HEADERS
                        ).status_code == 415
 
 

@@ -62,8 +62,19 @@ class Job(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     batch: Mapped[Batch] = relationship()
     batches: Mapped[list[Batch]] = relationship(secondary="batch_jobs", back_populates="jobs")
+    input: Mapped["JobInput | None"] = relationship(back_populates="job", uselist=False)
     document: Mapped["GeneratedDocument | None"] = relationship(back_populates="job", uselist=False)
     artifacts: Mapped[list["Artifact"]] = relationship(back_populates="job")
+
+
+class JobInput(Base):
+    __tablename__ = "job_inputs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), unique=True)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    job: Mapped[Job] = relationship(back_populates="input")
 
 
 class GeneratedDocument(Base):

@@ -43,8 +43,9 @@ python -m pip install -e '.[test]'
 cp "$APP_DIR/.env.example" "$APP_DIR/.env"
 ```
 
-Edit `.env`: set `DATABASE_URL` to your **dedicated app role/database**, set a long
-random `API_TOKEN`, and replace container paths with local absolute paths:
+Edit `.env`: set `DATABASE_URL` to your **dedicated app role/database**, supply
+`DATABASE_PASSWORD`, set a long random `API_TOKEN`, and replace container paths
+with local absolute paths:
 
 ```dotenv
 DATA_DIR=/absolute/path/to/resume_builderV3/data
@@ -90,8 +91,11 @@ The app never needs infrastructure administrator credentials.
 Set a URL of the form:
 
 ```text
-postgresql+psycopg://resume_builder:<URL-encoded-app-password>@postgres:5432/resume_builder
+postgresql+psycopg://resume_builder@postgres:5432/resume_builder
 ```
+
+Supply the dedicated role's password in `DATABASE_PASSWORD`; it is passed to the
+driver separately, so special characters do not need URL encoding.
 
 For non-Docker local development use the appropriate local database hostname
 (the infra service publishes PostgreSQL on VPS loopback, not publicly).
@@ -155,7 +159,8 @@ Capture time alone is not a new job revision. Do not edit accepted DB snapshots.
 
 ## HTTP/operator API
 
-All endpoints except `/health` require `Authorization: ******
+All endpoints except `/health` require an `Authorization` header using the
+`Bearer` scheme followed by the configured API token.
 Startup refuses a missing token unless `ALLOW_UNAUTHENTICATED=true` is explicitly
 set for loopback-only local development. Keep production authentication enabled.
 No permissive CORS policy is installed. The extension can post its JSON envelope
@@ -165,11 +170,11 @@ to `/batches` using its configured inbox bearer token.
 # Set API_TOKEN in this shell without committing it or placing it in shell history.
 curl -fsS http://127.0.0.1:8000/health
 curl -fsS http://127.0.0.1:8000/batches \
-  -H "Authorization: ******" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer"" $API_TOKEN" -H 'Content-Type: application/json' \
   --data-binary "@$APP_DIR/examples/job-envelope.json"
-curl -fsS -H "Authorization: ******" http://127.0.0.1:8000/jobs
-curl -fsS -H "Authorization: ******" http://127.0.0.1:8000/jobs/JOB_UUID
-curl -fsS -X POST -H "Authorization: ******" \
+curl -fsS -H "Authorization: Bearer"" $API_TOKEN" http://127.0.0.1:8000/jobs
+curl -fsS -H "Authorization: Bearer"" $API_TOKEN" http://127.0.0.1:8000/jobs/JOB_UUID
+curl -fsS -X POST -H "Authorization: Bearer"" $API_TOKEN" \
   http://127.0.0.1:8000/jobs/JOB_UUID/retry
 ```
 
@@ -254,6 +259,7 @@ Supabase calls have timeouts and persist sanitized HTTP errors, not response bod
 | Variable | Default / purpose |
 | --- | --- |
 | `DATABASE_URL` | Dedicated PostgreSQL SQLAlchemy URL; required deployment configuration |
+| `DATABASE_PASSWORD` | Dedicated app role password, passed separately to the driver |
 | `API_TOKEN` | Required bearer secret unless explicit local-only opt-out |
 | `ALLOW_UNAUTHENTICATED` | `false`; never enable on exposed deployments |
 | `PROVIDER` | `mock` or `openai` |

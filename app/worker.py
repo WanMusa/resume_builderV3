@@ -146,7 +146,7 @@ def process_one(session_factory, settings) -> bool:
                 _fence(session, job_id, token, settings)
                 job = session.get(Job, job_id)
                 job.status = "failed" if job.attempts >= settings.max_attempts else "queued"
-                job.error = f"{type(exc).__name__}: {exc}"
+                job.error = f"{type(exc).__name__}: Job processing failed"
                 job.lease_until = None
                 job.lease_token = None
                 session.commit()

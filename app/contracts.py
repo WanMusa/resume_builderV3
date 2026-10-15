@@ -18,8 +18,11 @@ class JobContract(BaseModel):
     location: str | None = None
     employment_type: str | None = None
     salary_text: str | None = None
-    extraction_mode: str = "raw"
-    notes: list[str] = Field(default_factory=list)
+    extraction_mode: Literal["raw", "llm_refined"] = "raw"
+    requirements: list[str] = Field(default_factory=list)
+    responsibilities: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    notes: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
     @field_validator("source_url")

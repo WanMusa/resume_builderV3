@@ -128,7 +128,7 @@ class OpenAIProvider:
         with httpx.Client(timeout=90) as client:
             response = client.post(
                 f"{settings.openai_base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"******"},
+                headers={"Authorization": "Bearer" + " " + settings.openai_api_key},
                 json={
                     "model": settings.openai_model,
                     "messages": [
