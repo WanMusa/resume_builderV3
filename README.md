@@ -113,6 +113,151 @@ Tables separate batch intake, job execution, normalized input snapshots
 (`artifacts`). JSON content uses PostgreSQL JSONB. Snapshots preserve the source
 description; normalization is used only for deduplication hashes.
 
+## Automatic VPS deployment
+
+The **Test and deploy** Actions workflow tests Python 3.12 with `.[test]`, checks
+the deployment shell/Compose file and builds the Docker image on pull requests.
+Only a push/merge to the default branch (`main`) can then deploy, after that
+revision's CI passes. PRs never receive deployment secrets. If the repository's
+default branch is renamed, update the workflow's `push.branches` filter too.
+In **Actions → Test and deploy → Run workflow**, select **main** for a manual
+deployment with fresh CI. Other refs cannot deploy. A rerun tests/deploys its
+original SHA, not whichever commit is newest at SSH time. Stale runs cannot
+downgrade an already-newer checkout; divergent local history is also refused.
+Deployments are serialized in Actions and with a VPS file lock.
+
+### One-time prerequisites (operator, not Actions)
+
+The workflow reuses exactly these SSH secrets:
+
+- `VPS_HOST`: hostname or IPv4 address, SSH port 22.
+- `VPS_USER`: dedicated deployment account.
+- `VPS_SSH_KEY`: that account's private SSH key.
+
+**Additional required host verification secret:** `VPS_KNOWN_HOSTS`, containing
+the complete OpenSSH known-hosts line(s) for `VPS_HOST`, e.g.
+`your-host.example ssh-ed25519 <public-host-key>`. Obtain/verify the public host
+key or fingerprint through the VPS provider console or another independently
+trusted channel. An unverified `ssh-keyscan` result is not verification. Hashed
+known-hosts entries also work. Host key changes fail closed; independently
+verify rotation before updating the secret. Actions uses strict checking and
+never transfers the runtime `.env`. **SSH secrets alone are not server setup.**
+
+On the VPS, install Bash, Git, `flock` (util-linux), GNU `timeout` (coreutils),
+Docker Engine and Compose v2 supporting `up --wait` (2.20+ recommended).
+The deploy account must be able to run Docker noninteractively (Docker access
+is effectively root access; use a trusted account). It needs outbound HTTPS to
+GitHub and the image/package registries. Provision the existing shared
+`ai_platform` network and the dedicated non-admin PostgreSQL LOGIN role/database
+described above; deployment will **not** create infrastructure, database users,
+or another PostgreSQL container. The app role must own its dedicated database,
+have USAGE/CREATE on its schema, and own/have read/write access to its app tables.
+Do not use an infra admin role or a database belonging to another app.
+
+The fixed checkout directory is **`$HOME/projects/resume_builderV3`**, relative
+to `VPS_USER`'s home. The fixed Compose project is **`resume_builder_v3`**.
+Its only accepted origin is
+**`https://github.com/WanMusa/resume_builderV3.git`** (public, no Git credentials).
+Prepare an empty directory with the runtime file and optionally the runtime
+directories below, or a clean checkout of that origin. Bootstrap refuses other
+files; it also safely resumes an interrupted Git initialization with no HEAD.
+Do not place it inside another checkout or behind symlinks.
+
+```bash
+APP_DIR="$HOME/projects/resume_builderV3"
+mkdir -p "$APP_DIR"
+# Securely create $APP_DIR/.env yourself, using .env.example as a reference.
+# Never overwrite an existing runtime .env with the example.
+chmod 600 "$APP_DIR/.env"
+sudo install -d -o 10001 -g 10001 -m 750 \
+  "$APP_DIR/data" "$APP_DIR/inbox" \
+  "$APP_DIR/inbox/json" "$APP_DIR/inbox/csv"
+# Install your OS's "acl" package first if setfacl is unavailable.
+# Git runs as the deploy account and must create the tracked inbox placeholders.
+sudo setfacl -m "u:$(id -u):rwx" \
+  "$APP_DIR/data" "$APP_DIR/inbox" \
+  "$APP_DIR/inbox/json" "$APP_DIR/inbox/csv"
+```
+
+If migrating existing input/output files, back them up, then grant the
+Dockerfile's **UID/GID 10001:10001** read/write/traverse access to all runtime
+directories and read access to existing files, including archives/quarantine
+and nested generated data. Existing input/output files and Git's `.gitkeep`
+placeholders do not need container write permission; input moves use directory
+permissions, and generated outputs use new lease-specific paths.
+Use narrowly scoped ownership/ACL changes, **not chmod 777**. Docker bind mounts
+hide the image's directory ownership. The script checks access inside the image
+as its real UID and does not run `chown` for you. The deployment account also
+needs the explicit directory ACLs above for Git checkout; owning the checkout
+root alone is not enough.
+Keep assets and prompts readable by UID 10001 but not writable by the container.
+
+In the VPS `.env`, set `DATABASE_URL`/`DATABASE_PASSWORD` for the dedicated role,
+a long random `API_TOKEN`, and `ALLOW_UNAUTHENTICATED=false`. Keep container paths
+`DATA_DIR=/app/data`, `INBOX_DIR=/app/inbox/json`, `ASSETS_DIR=/app/assets`,
+`PROMPTS_DIR=/app/prompts`. Configure Supabase credentials/bucket only if using
+that backend; preflight validates required settings but does not upload a test
+object. `PROVIDER=mock` remains mock unless **you** change the runtime file.
+Live generation also requires your real, validated non-example career evidence;
+deployment never switches providers or makes paid inference calls.
+
+API binding stays **127.0.0.1:8000**. If another service uses that port, set
+`RESUME_BUILDER_PORT=8001` (or another free port) in the VPS `.env`; it remains
+loopback-only and the container port remains 8000. Reverse-proxy routing,
+authentication policy and TLS/public HTTPS configuration remain a separate
+operator task. Do not expose the API unauthenticated or publish PostgreSQL.
+
+### Deployment behavior and recovery
+
+`scripts/deploy.sh TESTED_FULL_SHA main` is the reusable entry point, streamed
+over verified SSH from the tested checkout. Do not run it with an untested SHA.
+It fetches default-branch history but checks out only the requested revision,
+refuses dirty/staged tracked changes, local divergence, untracked collisions,
+and additional untracked source/assets/prompts. It never force-resets or cleans.
+Tracked edits to `assets/base_resume.json` or prompts **block deployment rather
+than being overwritten**. Back up private evidence/prompts outside the checkout
+before arranging an intentional update; do not commit private career data to
+this public repository. This workflow does not implement private asset overrides.
+Ignored `.env`, generated `data/`, inbox JSON/CSV, archive and quarantine contents
+are retained. Only the existing tracked inbox `.gitkeep` placeholders are allowed
+under runtime paths. There is no `down`, volume deletion or system pruning.
+
+Preflight/build failure leaves running services untouched. Builds and commands
+that might include env values in errors have their output suppressed in Actions;
+failures give a stage-specific, secret-free message. Diagnose privately on the
+VPS; **do not paste `.env`, expanded Compose config, or raw app/build logs into
+Actions/issues**. Only this project's `api`, `worker`, and `importer` are managed;
+existing containers from another directory with the same project name are refused.
+
+After building and checking auth/configuration, bind permissions and real DB
+connectivity/role readiness, deployment stops this app's importer/worker, runs
+the supported `resume-builder init-db`, then recreates these three services.
+`init-db` is idempotent `create_all`, **not a migration system**. Future schema
+changes need a separately reviewed migration/backup plan. No unrelated DB is
+initialized, stopped, dropped or migrated.
+
+The CLI catches SIGINT, so Compose uses it with a bounded five-minute stop grace
+period. **This is not a drain-to-completion implementation**: an in-flight request
+can be interrupted. Existing leases/checkpoints recover work after expiry, but
+a provider response not yet checkpointed can incur another paid call on retry.
+For cost-sensitive updates, pause intake and wait for active jobs to finish
+before merging/deploying. Do not run extra importer instances.
+
+Success requires sustained running containers with no restart, a DB/schema check
+and internal `/health` readiness. These checks do not import jobs, generate resumes
+or test live inference/storage. Failure after stopping/startup is reported as
+failure, not success; workers may remain stopped and operator recovery is needed.
+There is no automatic rollback or guarantee of zero downtime.
+
+**Rollback:** record the previous successful tested SHA from Actions, back up
+the DB/data, and review schema compatibility first. Prefer reverting the bad
+change in a new PR and merging it: the normal CI/deploy path then moves forward
+without bypassing downgrade protection. An emergency older-image/source rollback
+is an operator-only maintenance procedure, not a workflow ref input; stop only
+this app's services, preserve `.env`/runtime files and use a previously tested
+revision with a compatible schema. Never restore/drop the shared infra database,
+run destructive migrations, or silently reset a divergent checkout.
+
 ## Inbox contract and flow
 
 The current extension exports one schema-version-2 envelope per job; multiple
