@@ -158,6 +158,16 @@ def test_dirty_tracked_collision_and_divergence_refused(server):
     assert "divergent" in deploy(second).stderr
 
 
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_hidden_tracked_edits_refused(server, flag):
+    checkout, _, first, second, deploy, _ = server
+    assert deploy(first).returncode == 0
+    git(checkout, "update-index", flag, "app/version.py")
+    (checkout / "app/version.py").write_text("hidden local edit")
+    assert "review tracked edits" in deploy(second).stderr
+    assert (checkout / "app/version.py").read_text() == "hidden local edit"
+
+
 def test_missing_env_and_wrong_origin_refused(server):
     checkout, _, first, _, deploy, calls = server
     (checkout / ".env").unlink()
@@ -219,6 +229,27 @@ def test_files_checked_without_generation(tmp_path):
     deployment.check_files(settings)
     (settings.data_dir / "unsafe").symlink_to(tmp_path)
     with pytest.raises(ValueError, match="symlinks"):
+        deployment.check_files(settings)
+
+
+def test_runtime_files_need_read_not_write_access(tmp_path, monkeypatch):
+    settings = Settings(_env_file=None, assets_dir=ROOT / "assets", prompts_dir=ROOT / "prompts",
+                        data_dir=tmp_path / "data", inbox_dir=tmp_path / "inbox/json")
+    settings.data_dir.mkdir()
+    settings.inbox_dir.mkdir(parents=True)
+    for name in (".gitkeep", "uploaded.json"):
+        (settings.inbox_dir / name).touch()
+    real_access = os.access
+
+    def container_access(path, mode):
+        if Path(path).is_file():
+            return not mode & os.W_OK
+        return real_access(path, mode)
+
+    monkeypatch.setattr(deployment.os, "access", container_access)
+    deployment.check_files(settings)
+    monkeypatch.setattr(deployment.os, "access", lambda path, mode: False)
+    with pytest.raises(ValueError):
         deployment.check_files(settings)
 
 

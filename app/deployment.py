@@ -46,7 +46,7 @@ def check_files(settings: Settings) -> None:
                 raise ValueError("Required prompt is empty")
     # Check as the image's real UID, including existing nested output/archive dirs.
     for root in (settings.data_dir, settings.inbox_dir.parent):
-        if not root.is_dir():
+        if not root.is_dir() or not os.access(root, os.R_OK | os.W_OK | os.X_OK):
             raise ValueError("Provision bind directories for UID 10001")
         for directory, dirs, files in os.walk(root, followlinks=False):
             if any((Path(directory) / name).is_symlink() for name in dirs + files):
@@ -55,8 +55,10 @@ def check_files(settings: Settings) -> None:
                 raise ValueError("Runtime directories must be readable/writable by UID 10001")
             with tempfile.TemporaryFile(dir=directory):
                 pass
-            if any(not os.access(os.path.join(directory, name), os.R_OK | os.W_OK) for name in files):
-                raise ValueError("Existing runtime files must be readable/writable by UID 10001")
+            # Existing inputs are read then renamed; outputs use new lease paths.
+            # Git's deployment-user-owned .gitkeep files need no write access.
+            if any(not os.access(os.path.join(directory, name), os.R_OK) for name in files):
+                raise ValueError("Existing runtime files must be readable by UID 10001")
     if not settings.inbox_dir.is_dir():
         raise ValueError("Provision the JSON inbox directory")
 

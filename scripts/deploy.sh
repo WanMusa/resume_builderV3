@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 export GIT_TERMINAL_PROMPT=0
 export GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes'
 export GIT_CONFIG_NOSYSTEM=1
@@ -61,6 +62,11 @@ check_runtime_paths() {
     done
 }
 check_runtime_paths < <(git ls-files -z -- .env data inbox)
+while IFS= read -r -d '' entry; do
+    case "${entry:0:1}" in
+        [a-z]|S) die 'Clear assume-unchanged/skip-worktree flags and review tracked edits before deploying.' ;;
+    esac
+done < <(git ls-files -v -z)
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
     if ! git diff --quiet || ! git diff --cached --quiet; then
         die 'Back up tracked edits (including assets/prompts) before deploying.'
@@ -109,7 +115,8 @@ compose=(docker compose --project-name resume_builder_v3 --project-directory "$d
 failure='Invalid Compose settings; review runtime .env privately.'
 quiet "${compose[@]}" config --quiet
 # Do not adopt containers belonging to another checkout that uses the same project name.
-for id in $(docker ps -aq --filter label=com.docker.compose.project=resume_builder_v3); do
+existing_containers="$(docker ps -aq --filter label=com.docker.compose.project=resume_builder_v3)"
+for id in $existing_containers; do
     [[ "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$id")" == "$deploy_dir" ]] ||
         die 'Compose project name is already owned by another directory.'
 done
