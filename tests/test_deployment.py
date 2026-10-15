@@ -105,6 +105,8 @@ def test_bootstrap_exact_sha_and_preserve_runtime(server):
     assert "stop --timeout 300 worker importer" in calls.read_text()
     assert "resume-builder init-db" in calls.read_text()
     assert calls.read_text().index("build api") < calls.read_text().index("stop --timeout")
+    assert calls.read_text().index("build api") < calls.read_text().index("--user 0:")
+    assert calls.read_text().index("--user 0:") < calls.read_text().index("python -m app.deployment")
     assert calls.read_text().index("init-db") < calls.read_text().index("up -d")
     assert deploy(second).returncode == 0
     assert deploy(second).returncode == 0  # reruns of the same revision are safe
@@ -114,7 +116,50 @@ def test_bootstrap_exact_sha_and_preserve_runtime(server):
     assert git(checkout, "rev-parse", "HEAD") == second
 
 
-@pytest.mark.parametrize("failure", ["network inspect", "build api", "python -m app.deployment"])
+def test_runtime_directories_created_and_permission_helper_is_scoped(server):
+    checkout, _, _, _, deploy, calls = server
+    shutil.rmtree(checkout / "data")
+    shutil.rmtree(checkout / "inbox")
+    result = deploy()
+    assert result.returncode == 0, result.stderr
+    for path in ("data", "inbox", "inbox/json", "inbox/csv"):
+        assert (checkout / path).is_dir()
+    commands = calls.read_text()
+    assert "--cap-add CHOWN --cap-add FOWNER --cap-add DAC_READ_SEARCH" in commands
+    assert "--entrypoint python api" in commands
+    assert "os.fchown(descriptor, 10001, group)" in commands
+    assert "os.fchmod(descriptor, 0o2770)" in commands
+    assert "os.O_NOFOLLOW" in commands
+    assert "chown -R" not in commands
+    assert "chmod -R" not in commands
+
+
+@pytest.mark.parametrize("path", ["data", "inbox", "inbox/json", "inbox/csv"])
+def test_runtime_symlinks_refused_before_permission_changes(server, path):
+    checkout, _, _, _, deploy, calls = server
+    target = checkout.parent / "external"
+    target.mkdir()
+    (target / "preserve.txt").write_text("keep me")
+    shutil.rmtree(checkout / path)
+    (checkout / path).symlink_to(target, target_is_directory=True)
+    result = deploy()
+    assert result.returncode != 0
+    assert "real directories" in result.stderr
+    assert (target / "preserve.txt").read_text() == "keep me"
+    assert "--user 0:" not in calls.read_text()
+
+
+def test_checkout_and_env_still_require_manual_setup(server):
+    checkout, _, _, _, deploy, calls = server
+    shutil.rmtree(checkout)
+    result = deploy()
+    assert result.returncode != 0
+    assert "as a real directory" in result.stderr
+    assert not checkout.exists()
+    assert "build api" not in calls.read_text()
+
+
+@pytest.mark.parametrize("failure", ["network inspect", "build api", "--user 0:", "python -m app.deployment"])
 def test_preflight_failure_keeps_services_running_and_hides_output(server, failure):
     _, _, _, _, deploy, calls = server
     result = deploy(failure=failure)

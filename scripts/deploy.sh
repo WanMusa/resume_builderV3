@@ -75,8 +75,9 @@ else
     bootstrap_contents
     [[ -z "$(git ls-files)" ]] || die 'Incomplete bootstrap has staged files.'
 fi
-for path in data inbox; do
-    [[ ! -e "$path" || ( -d "$path" && ! -L "$path" ) ]] || die 'Runtime bind paths must be real directories.'
+for path in data inbox inbox/json inbox/csv; do
+    [[ ! -L "$path" && ( ! -e "$path" || -d "$path" ) ]] || die 'Runtime bind paths must be real directories.'
+    mkdir -p -- "$path"
 done
 
 failure='Cannot fetch the public default branch noninteractively.'
@@ -106,8 +107,8 @@ while IFS= read -r -d '' path; do
         *) die 'Untracked source/assets/prompts would enter the image; back them up outside the checkout.' ;;
     esac
 done < <(git ls-files --others -z -- app assets prompts)
-for path in data inbox/json inbox/csv; do
-    [[ -d "$path" && ! -L "$path" ]] || die 'Provision data/, inbox/json/ and inbox/csv/ with UID 10001 write access.'
+for path in data inbox inbox/json inbox/csv; do
+    [[ -d "$path" && ! -L "$path" ]] || die 'Runtime bind paths must remain real directories.'
 done
 
 compose=(docker compose --project-name resume_builder_v3 --project-directory "$deploy_dir"
@@ -122,6 +123,21 @@ for id in $existing_containers; do
 done
 failure='Image build failed; running services were not stopped. Build locally to diagnose.'
 quiet timeout 900 "${compose[@]}" build api worker importer
+failure='Runtime directory permissions setup failed; no services were stopped. Check this app runtime paths.'
+quiet timeout 60 "${compose[@]}" run --rm --no-deps -T --user "0:$(id -g)" \
+    --cap-add CHOWN --cap-add FOWNER --cap-add DAC_READ_SEARCH --entrypoint python api -c '
+import os
+import sys
+
+group = int(sys.argv[1])
+for path in ("/app/data", "/app/inbox", "/app/inbox/json", "/app/inbox/csv"):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fchown(descriptor, 10001, group)
+        os.fchmod(descriptor, 0o2770)
+    finally:
+        os.close(descriptor)
+' "$(id -g)"
 failure='Deployment preflight failed: check auth/provider/storage settings, dedicated PostgreSQL role, assets/prompts and UID 10001 bind permissions. No services were stopped.'
 quiet timeout 90 "${compose[@]}" run --rm --no-deps -T api timeout 60 python -m app.deployment
 

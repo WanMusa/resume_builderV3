@@ -158,8 +158,8 @@ The fixed checkout directory is **`$HOME/projects/resume_builderV3`**, relative
 to `VPS_USER`'s home. The fixed Compose project is **`resume_builder_v3`**.
 Its only accepted origin is
 **`https://github.com/WanMusa/resume_builderV3.git`** (public, no Git credentials).
-Prepare an empty directory with the runtime file and optionally the runtime
-directories below, or a clean checkout of that origin. Bootstrap refuses other
+Prepare an empty directory with the runtime file, or a clean checkout of that
+origin. Deployment creates missing runtime directories automatically. Bootstrap refuses other
 files; it also safely resumes an interrupted Git initialization with no HEAD.
 Do not place it inside another checkout or behind symlinks.
 
@@ -169,27 +169,31 @@ mkdir -p "$APP_DIR"
 # Securely create $APP_DIR/.env yourself, using .env.example as a reference.
 # Never overwrite an existing runtime .env with the example.
 chmod 600 "$APP_DIR/.env"
-sudo install -d -o 10001 -g 10001 -m 750 \
-  "$APP_DIR/data" "$APP_DIR/inbox" \
-  "$APP_DIR/inbox/json" "$APP_DIR/inbox/csv"
-# Install your OS's "acl" package first if setfacl is unavailable.
-# Git runs as the deploy account and must create the tracked inbox placeholders.
-sudo setfacl -m "u:$(id -u):rwx" \
-  "$APP_DIR/data" "$APP_DIR/inbox" \
-  "$APP_DIR/inbox/json" "$APP_DIR/inbox/csv"
 ```
 
+The existing Actions workflow invokes `scripts/deploy.sh`, which creates missing
+`data/`, `inbox/`, `inbox/json/`, and `inbox/csv/` and rejects symlinks/files in
+their place. After building, a short-lived setup container sets only those four
+directory owners to UID 10001, their group to the deployment account's primary
+GID, and their mode to `2770` (setgid, owner/group access, no other-user access).
+The helper runs as root with only the added CHOWN, FOWNER and DAC_READ_SEARCH
+capabilities; normal services keep their unprivileged user and dropped caps.
+No interactive sudo or ACL package is needed for a fresh deployment. Existing
+files are not recursively chowned/chmodded, and `.env` is never generated or
+overwritten. Setup failure prevents service shutdown/startup.
+
 If migrating existing input/output files, back them up, then grant the
-Dockerfile's **UID/GID 10001:10001** read/write/traverse access to all runtime
+Dockerfile's **UID 10001** read/write/traverse access to all runtime
 directories and read access to existing files, including archives/quarantine
 and nested generated data. Existing input/output files and Git's `.gitkeep`
 placeholders do not need container write permission; input moves use directory
 permissions, and generated outputs use new lease-specific paths.
 Use narrowly scoped ownership/ACL changes, **not chmod 777**. Docker bind mounts
-hide the image's directory ownership. The script checks access inside the image
-as its real UID and does not run `chown` for you. The deployment account also
-needs the explicit directory ACLs above for Git checkout; owning the checkout
-root alone is not enough.
+hide the image's directory ownership. Existing runtime paths must also remain
+accessible to the deployment account for Git checkout before the setup helper
+runs. The script checks the resulting runtime access inside the image as UID
+10001; incompatible permissions on existing nested files still need an explicit
+migration plan rather than recursive deployment-time ownership changes.
 Keep assets and prompts readable by UID 10001 but not writable by the container.
 
 In the VPS `.env`, set `DATABASE_URL`/`DATABASE_PASSWORD` for the dedicated role,
