@@ -67,6 +67,9 @@ if [[ "$*" == *"$FAIL_DOCKER"* && -n "$FAIL_DOCKER" ]]; then
     echo "sentinel-not-a-real-secret" >&2
     exit 1
 fi
+if [[ ( "$*" == *" run "* || "$*" == *" exec -T "* ) && "${DRAIN_DOCKER_STDIN:-}" == 1 ]]; then
+    cat >/dev/null
+fi
 if [[ "$1" == inspect ]]; then
     echo "${CONTAINER_STATE:-running 0}"
 elif [[ "$*" == *" ps -q "* ]]; then
@@ -85,10 +88,12 @@ fi
            "GIT_CONFIG_GLOBAL": str(gitconfig), "DOCKER_CALLS": str(tmp_path / "docker-calls"),
            "FAIL_DOCKER": ""}
 
-    def deploy(sha=second, failure="", state="running 0"):
+    def deploy(sha=second, failure="", state="running 0", drain_stdin=False):
         return subprocess.run(
-            ["bash", str(script), sha, "main"],
-            env={**env, "FAIL_DOCKER": failure, "CONTAINER_STATE": state},
+            ["bash", "-s", "--", sha, "main"],
+            input=script.read_text(),
+            env={**env, "FAIL_DOCKER": failure, "CONTAINER_STATE": state,
+                 "DRAIN_DOCKER_STDIN": "1" if drain_stdin else "0"},
             text=True, capture_output=True, timeout=15,
         )
 
@@ -117,6 +122,15 @@ def test_bootstrap_exact_sha_and_preserve_runtime(server):
     assert stale.returncode != 0
     assert "Stale deployment" in stale.stderr
     assert git(checkout, "rev-parse", "HEAD") == second
+
+
+def test_streamed_script_reaches_readiness_when_docker_reads_stdin(server):
+    _, _, _, second, deploy, calls = server
+    result = deploy(drain_stdin=True)
+    assert result.returncode == 0, result.stderr
+    assert f"Deployment healthy at tested revision {second}" in result.stdout
+    assert "resume-builder init-db" in calls.read_text()
+    assert "up -d --no-deps --force-recreate" in calls.read_text()
 
 
 def test_runtime_directories_created_and_permission_helper_is_scoped(server):

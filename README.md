@@ -259,7 +259,11 @@ authenticated queue API, not to Supabase or the model backend. Changing
 ### Deployment behavior and recovery
 
 `scripts/deploy.sh TESTED_FULL_SHA main` is the reusable entry point, streamed
-over verified SSH from the tested checkout. Do not run it with an untested SHA.
+over verified SSH from the tested checkout. Docker/maintenance commands receive
+`/dev/null` as stdin so they cannot consume the remaining streamed script. Do not
+run it with an untested SHA. A completed deployment prints
+`Deployment healthy at tested revision <SHA>` after checking all three services;
+a green CI job alone does not establish that the deploy job ran.
 It fetches default-branch history but checks out only the requested revision,
 refuses dirty/staged tracked changes, local divergence, untracked collisions,
 and additional untracked source/assets/prompts. It never force-resets or cleans.

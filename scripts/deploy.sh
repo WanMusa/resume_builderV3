@@ -6,7 +6,7 @@ export GIT_SSH_COMMAND='ssh -o BatchMode=yes -o StrictHostKeyChecking=yes'
 export GIT_CONFIG_NOSYSTEM=1
 
 die() { printf 'Deployment refused: %s\n' "$*" >&2; exit 1; }
-quiet() { "$@" >/dev/null 2>&1 || die "$failure"; }
+quiet() { "$@" </dev/null >/dev/null 2>&1 || die "$failure"; }
 
 sha="${1:-}"
 branch="${2:-main}"
@@ -160,9 +160,9 @@ while (( SECONDS < deadline )); do
             { healthy=false; break; }
     done
     if [[ "$healthy" == true ]] &&
-        timeout 20 "${compose[@]}" exec -T api timeout 15 python -m app.deployment --ready >/dev/null 2>&1 &&
+        timeout 20 "${compose[@]}" exec -T api timeout 15 python -m app.deployment --ready </dev/null >/dev/null 2>&1 &&
         timeout 10 "${compose[@]}" exec -T api python -c \
-            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" >/dev/null 2>&1; then
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" </dev/null >/dev/null 2>&1; then
         # Require sustained running status, not a single lucky instant before a crash.
         if [[ "${stable_since:-0}" == 0 ]]; then stable_since=$SECONDS; fi
         if (( SECONDS - stable_since >= 15 )); then
