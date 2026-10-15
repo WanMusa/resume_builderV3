@@ -67,10 +67,10 @@ def retry_job(session, job_id: str) -> Job:
     if job is None:
         raise LookupError("Job not found")
     result = session.execute(update(Job).where(
-        Job.id == job_id, Job.status.in_(("failed", "needs_review")),
+        Job.id == job_id, Job.status == "failed",
     ).values(status="queued", attempts=0, error=None, lease_until=None, lease_token=None, completed_at=None))
     if result.rowcount != 1:
-        raise ValueError("Only failed or needs_review jobs can be retried")
+        raise ValueError("Only failed jobs can be retried")
     session.refresh(job)
     return job
 

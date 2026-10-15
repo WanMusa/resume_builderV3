@@ -8,7 +8,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = "postgresql+psycopg://postgres@localhost:5432/resume_builder"
+    database_url: str = "postgresql+psycopg://resume_builder@localhost:5432/resume_builder"
+    database_password: str | None = None
     api_token: str | None = None
     allow_unauthenticated: bool = False
     provider: Literal["mock", "openai"] = "mock"

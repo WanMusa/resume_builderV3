@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.engine import URL
 from sqlalchemy.schema import CreateSchema, DropSchema
 
 from app.config import Settings
@@ -39,6 +40,7 @@ def workspace():
 def database(workspace):
     settings = Settings(
         _env_file=None, database_url=os.environ.get("CORE_TEST_DATABASE_URL", f"sqlite:///{workspace / 'core.db'}"),
+        database_password=os.environ.get("CORE_TEST_DATABASE_PASSWORD"),
         data_dir=workspace / "data", inbox_dir=workspace / "inbox", max_attempts=2,
     )
     engine = make_engine(settings)
@@ -104,8 +106,9 @@ def pipeline(monkeypatch):
 
 def test_defaults_and_postgres_models():
     settings = Settings(_env_file=None)
-    assert settings.database_url.startswith("postgresql+psycopg://")
+    assert settings.database_url == "postgresql+psycopg://resume_builder@localhost:5432/resume_builder"
     assert settings.provider == "mock"
+    assert settings.database_password is None
     assert not settings.allow_unauthenticated
     assert settings.lease_seconds == 600
     assert Job.__table__.c.payload.type.compile(dialect=postgresql.dialect()) == "JSONB"
@@ -113,6 +116,47 @@ def test_defaults_and_postgres_models():
         Settings(_env_file=None, max_attempts=0)
     with pytest.raises(ValidationError):
         Settings(_env_file=None, lease_seconds=299)
+
+
+def test_dotenv_password_passed_to_postgres_driver(workspace, monkeypatch):
+    from sqlalchemy import create_engine as original_create_engine
+    from app import db
+
+    dotenv = workspace / "settings.env"
+    dotenv.write_text("DATABASE_PASSWORD=fixture-value\n")
+    settings = Settings(_env_file=dotenv)
+    captured = {}
+
+    def capture(url, **kwargs):
+        captured.update(kwargs)
+        return original_create_engine(url, **kwargs)
+
+    monkeypatch.setattr(db, "create_engine", capture)
+    engine = make_engine(settings)
+    assert settings.database_password == "fixture-value"
+    assert captured["connect_args"] == {"password": "fixture-value"}
+    assert engine.url.password is None
+    engine.dispose()
+
+
+def test_database_password_does_not_affect_sqlite(workspace):
+    settings = Settings(
+        _env_file=None, database_url=f"sqlite:///{workspace / 'password.db'}",
+        database_password="fixture-value",
+    )
+    engine = make_engine(settings)
+    init_db(engine)
+    engine.dispose()
+
+
+def test_custom_inline_password_url_preserved_without_separate_password():
+    fixture_value = "fixture-value"
+    url = URL.create(
+        "postgresql+psycopg", "example", fixture_value, "localhost", None, "example",
+    ).render_as_string(hide_password=False)
+    engine = make_engine(Settings(_env_file=None, database_url=url, database_password=None))
+    assert engine.url.password == "fixture-value"
+    engine.dispose()
 
 
 def test_strict_contract_defaults(payload):
@@ -278,7 +322,10 @@ def test_review_required(database, payload, pipeline):
     package["review_required"] = True
     intake(factory, payload)
     assert process_one(factory, settings)
-    assert get_job(factory).status == "needs_review"
+    job = get_job(factory)
+    assert job.status == "needs_review"
+    with factory() as session, pytest.raises(ValueError, match="Only failed jobs"):
+        retry_job(session, job.id)
 
 
 def test_checkpoint_survives_render_failure(database, payload, pipeline, monkeypatch):

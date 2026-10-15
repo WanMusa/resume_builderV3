@@ -1,4 +1,5 @@
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from app.config import Settings
@@ -7,7 +8,10 @@ from app.models import Base
 
 def make_engine(settings: Settings):
     kwargs = {"pool_pre_ping": True}
-    if settings.database_url.startswith("sqlite"):
+    backend = make_url(settings.database_url).get_backend_name()
+    if backend == "postgresql" and settings.database_password:
+        kwargs["connect_args"] = {"password": settings.database_password}
+    if backend == "sqlite":
         kwargs["connect_args"] = {"check_same_thread": False}
     engine = create_engine(settings.database_url, **kwargs)
     if engine.dialect.name == "sqlite":
