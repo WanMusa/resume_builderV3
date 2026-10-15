@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "exported_at": "2026-10-14T12:00:00Z",
+  "jobs": [{
+    "id": "example-capture-1",
+    "source_url": "https://example.com/jobs/123",
+    "site": "other",
+    "captured_at": "2026-10-14T11:30:00Z",
+    "title": "Business Analyst",
+    "company": "Example Company",
+    "location": null,
+    "description_text": "Seeking a business analyst with SQL and business requirements experience.",
+    "employment_type": "Full-time",
+    "salary_text": null
+  }]
+}

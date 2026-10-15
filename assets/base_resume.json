@@ -1,0 +1,24 @@
+{
+  "is_example": true,
+  "fixed": {
+    "identity": {"name": "Example Candidate", "contact": "Replace with your professional contact details"},
+    "experience": [
+      {"id": "role-1", "employer": "Example Employer", "title": "Business Analyst", "dates": "2022–2025"}
+    ],
+    "education": ["Example qualification — replace before live generation"],
+    "certifications": []
+  },
+  "expertise": [
+    {"id": "skill-analysis", "text": "Business analysis"},
+    {"id": "skill-sql", "text": "SQL"}
+  ],
+  "achievements": [
+    {
+      "id": "achievement-1",
+      "experience_id": "role-1",
+      "text": "Documented business requirements and validated reporting data with SQL.",
+      "details": "Illustrative evidence only; replace with a verified career record.",
+      "critical": true
+    }
+  ]
+}

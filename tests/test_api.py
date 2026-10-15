@@ -1,0 +1,60 @@
+import json
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.config import Settings
+from app.db import init_db
+from app.main import MAX_UPLOAD_BYTES, create_app
+
+ROOT = Path(__file__).resolve().parents[1]
+HEADERS = {"Authorization": "Bearer" + " " + "test-token"}
+
+
+@pytest.fixture
+def client(tmp_path):
+    settings = Settings(_env_file=None, database_url=f"sqlite:///{tmp_path}/api.db",
+                        api_token="test-token", data_dir=tmp_path)
+    app = create_app(settings)
+    init_db(app.state.engine)
+    with TestClient(app) as client:
+        yield client
+
+
+def test_health_auth_and_upload_visibility(client):
+    assert client.get("/health").status_code == 200
+    assert client.get("/jobs").status_code == 401
+    headers = HEADERS
+    assert client.get("/jobs", headers={"Authorization": "Bearer" + " " + "wrong"}).status_code == 401
+    payload = json.loads((ROOT / "examples/job-envelope.json").read_text())
+    response = client.post("/batches", json=payload, headers=headers)
+    assert response.status_code == 201
+    batch = response.json()
+    assert len(batch["job_ids"]) == 1
+    duplicate = client.post("/batches", json=payload, headers=headers)
+    assert duplicate.json()["id"] == batch["id"]
+    job_id = batch["job_ids"][0]
+    detail = client.get(f"/jobs/{job_id}", headers=headers).json()
+    assert detail["status"] == "queued"
+    assert detail["input"]["description_text"] == payload["jobs"][0]["description_text"]
+    assert client.get("/jobs?status=completed", headers=headers).json() == []
+    assert client.get("/batches", headers=headers).json()[0]["id"] == batch["id"]
+    assert client.post(f"/jobs/{job_id}/retry", headers=headers).status_code == 409
+    assert client.get("/jobs/missing", headers=headers).status_code == 404
+    assert client.get("/jobs?limit=0", headers=headers).status_code == 422
+
+
+def test_upload_errors_and_size_limit(client):
+    headers = {**HEADERS, "Content-Type": "application/json"}
+    assert client.post("/batches", content="{", headers=headers).status_code == 422
+    assert client.post("/batches", json={"schema_version": 2}, headers=headers).status_code == 422
+    assert client.post("/batches", content="x" * (MAX_UPLOAD_BYTES + 1),
+                       headers=headers).status_code == 413
+    assert client.post("/batches", content="{}", headers=HEADERS
+                       ).status_code == 415
+
+
+def test_api_refuses_implicit_unauthenticated_mode():
+    with pytest.raises(RuntimeError, match="API_TOKEN"):
+        create_app(Settings(_env_file=None, api_token=None, allow_unauthenticated=False))

@@ -1,0 +1,1 @@
+Using the job and career evidence below, produce only the variable resume fields. Keep the summary under 120 words. Select at most 12 expertise IDs and 16 achievement IDs. Preserve critical evidence and career relevance. If the evidence does not support a requirement, do not claim it.
