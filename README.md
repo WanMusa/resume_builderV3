@@ -207,9 +207,54 @@ deployment never switches providers or makes paid inference calls.
 
 API binding stays **127.0.0.1:8000**. If another service uses that port, set
 `RESUME_BUILDER_PORT=8001` (or another free port) in the VPS `.env`; it remains
-loopback-only and the container port remains 8000. Reverse-proxy routing,
-authentication policy and TLS/public HTTPS configuration remain a separate
-operator task. Do not expose the API unauthenticated or publish PostgreSQL.
+loopback-only and the container port remains 8000. Do not expose the API
+unauthenticated or publish PostgreSQL.
+
+### Shared HTTPS hostname and extension inbox
+
+The API registers with the existing `ai-platform_infra` nginx-proxy 1.7 and
+ACME companion on `ai_platform`, using `APP_DOMAIN` (default
+`wanagents.duckdns.org`) and only the **`/resume/`** path. `VIRTUAL_DEST=/`
+strips that prefix: public `/resume/batches` reaches internal `/batches`.
+Only `api` has proxy registration settings; worker/importer stay private.
+One-off deployment setup/preflight/database containers clear the proxy and ACME
+host variables so they cannot join the public route during deployment.
+Existing Gmail sorter and local-LLM routes/configuration are not modified.
+
+The proxy uses the hostname's existing certificate; its ACME companion maintains
+certificates using infra's configured `DEFAULT_EMAIL`. No additional hostname,
+certificate email, proxy-volume edits, or public application port is required
+for this shared-host setup. DNS and the existing proxy/companion must already be
+working for the hostname. Do not set this API to the root path `/`, which could
+mix it with another service using the same host/path.
+
+After deploying the updated revision, verify on the VPS or your laptop:
+
+```bash
+curl --fail --show-error https://wanagents.duckdns.org/resume/health
+curl --silent --output /dev/null --write-out '%{http_code}\n' \
+  https://wanagents.duckdns.org/resume/batches
+```
+
+Health should return 200 and `{"status":"ok"}`; the unauthenticated batches
+request should return **401**, not 404. These checks do not enqueue generation.
+If needed, run `docker exec reverse-proxy nginx -t` and inspect the relevant
+host/path block privately with `nginx -T`; do not paste full proxy configuration
+or credentials into logs/chat. Existing custom VPS proxy overrides must not
+conflict with `/resume/`. Recheck your existing Gmail/LLM URLs after deployment.
+
+In the capture extension Settings, enable explicit inbox sending and use:
+
+| Setting | Value |
+| --- | --- |
+| Inbox HTTPS base URL | `https://wanagents.duckdns.org` |
+| Inbox path | `/resume/batches` |
+| Inbox bearer token | The resume builder VPS `API_TOKEN`, without `Bearer` |
+
+Save settings and grant Chrome access when prompted, then select jobs and use
+**Send selected**. This posts the schema-version-2 envelope directly to the
+authenticated queue API, not to Supabase or the model backend. Changing
+`APP_DOMAIN` requires using that hostname in the checks and extension settings.
 
 ### Deployment behavior and recovery
 
@@ -456,11 +501,11 @@ fallback is not a public file server or a secrets store.
 
 4. Confirm `/health`, import the example, inspect jobs/artifacts with mock mode,
    then configure actual evidence/provider/storage and test a reviewed real job.
-5. API is bound to VPS loopback port 8000. Add the existing HTTPS reverse proxy
-   deliberately (upstream `api:8000` on `ai_platform`); do not expose this API
-   publicly without TLS, bearer authentication, request size/rate limits, and
-   appropriate access controls. Proxy host/certificate configuration and secrets
-   provisioning remain operator tasks, not assumed deployment automation.
+5. API stays bound to VPS loopback port 8000 and registers only `/resume/` with
+  the existing shared HTTPS reverse proxy (see the shared-host instructions
+  above). Keep bearer authentication enabled, verify TLS and the 401 check,
+  and apply appropriate request-size/rate limits at the proxy. Existing DNS,
+  proxy/certificate infrastructure and application secrets remain prerequisites.
 
 Containers use a read-only root filesystem, dropped capabilities, no-new-privileges,
 and read-only prompt/asset mounts. Never commit `.env`, inbox archives, database

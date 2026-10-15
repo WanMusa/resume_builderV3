@@ -107,6 +107,9 @@ def test_bootstrap_exact_sha_and_preserve_runtime(server):
     assert calls.read_text().index("build api") < calls.read_text().index("stop --timeout")
     assert calls.read_text().index("build api") < calls.read_text().index("--user 0:")
     assert calls.read_text().index("--user 0:") < calls.read_text().index("python -m app.deployment")
+    maintenance = [line for line in calls.read_text().splitlines() if " run --rm " in line]
+    assert len(maintenance) == 3
+    assert all("-e VIRTUAL_HOST= -e LETSENCRYPT_HOST=" in command for command in maintenance)
     assert calls.read_text().index("init-db") < calls.read_text().index("up -d")
     assert deploy(second).returncode == 0
     assert deploy(second).returncode == 0  # reruns of the same revision are safe

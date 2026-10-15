@@ -28,6 +28,26 @@ jobs:
           shellcheck scripts/deploy.sh
           touch .env
           docker compose --env-file .env config --quiet
+      - name: Check shared-host proxy routing
+        run: |
+          docker compose --env-file .env config --format json | python -c '
+          import json
+          import sys
+
+          config = json.load(sys.stdin)
+          api = config["services"]["api"]
+          environment = api["environment"]
+          assert environment["VIRTUAL_HOST"] == "wanagents.duckdns.org"
+          assert environment["LETSENCRYPT_HOST"] == environment["VIRTUAL_HOST"]
+          assert environment["VIRTUAL_PORT"] == "8000"
+          assert environment["VIRTUAL_PATH"] == "/resume/"
+          assert environment["VIRTUAL_DEST"] == "/"
+          assert "ai_platform" in api["networks"]
+          assert api["ports"] and all(port["host_ip"] == "127.0.0.1" for port in api["ports"])
+          for name in ("worker", "importer"):
+              assert not config["services"][name].get("environment", {}).get("VIRTUAL_HOST")
+          print("Shared-host routing contract passed")
+          '
       - name: Build production image
         run: docker build --tag resume-builder-ci:${{ github.sha }} .
 

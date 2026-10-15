@@ -21,6 +21,14 @@ x-app: &app
 services:
   api:
     <<: *app
+    environment:
+      VIRTUAL_HOST: ${APP_DOMAIN:-wanagents.duckdns.org}
+      VIRTUAL_PORT: "8000"
+      VIRTUAL_PATH: /resume/
+      VIRTUAL_DEST: /
+      LETSENCRYPT_HOST: ${APP_DOMAIN:-wanagents.duckdns.org}
+    expose:
+      - "8000"
     ports:
       - "127.0.0.1:${RESUME_BUILDER_PORT:-8000}:8000"
     healthcheck:

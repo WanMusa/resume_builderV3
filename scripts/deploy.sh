@@ -124,7 +124,7 @@ done
 failure='Image build failed; running services were not stopped. Build locally to diagnose.'
 quiet timeout 900 "${compose[@]}" build api worker importer
 failure='Runtime directory permissions setup failed; no services were stopped. Check this app runtime paths.'
-quiet timeout 60 "${compose[@]}" run --rm --no-deps -T --user "0:$(id -g)" \
+quiet timeout 60 "${compose[@]}" run --rm --no-deps -T -e VIRTUAL_HOST= -e LETSENCRYPT_HOST= --user "0:$(id -g)" \
     --cap-add CHOWN --cap-add FOWNER --cap-add DAC_READ_SEARCH --entrypoint python api -c '
 import os
 import sys
@@ -139,14 +139,14 @@ for path in ("/app/data", "/app/inbox", "/app/inbox/json", "/app/inbox/csv"):
         os.close(descriptor)
 ' "$(id -g)"
 failure='Deployment preflight failed: check auth/provider/storage settings, dedicated PostgreSQL role, assets/prompts and UID 10001 bind permissions. No services were stopped.'
-quiet timeout 90 "${compose[@]}" run --rm --no-deps -T api timeout 60 python -m app.deployment
+quiet timeout 90 "${compose[@]}" run --rm --no-deps -T -e VIRTUAL_HOST= -e LETSENCRYPT_HOST= api timeout 60 python -m app.deployment
 
 # The CLI has no drain handler. SIGINT reaches its KeyboardInterrupt handler;
 # allow a bounded grace period, then rely on lease/checkpoint recovery.
 failure='Could not stop app workers/importer; inspect this project privately.'
 quiet timeout 330 "${compose[@]}" stop --timeout 300 worker importer
 failure='App schema bootstrap failed; workers remain stopped. Diagnose privately; no automatic rollback.'
-quiet timeout 90 "${compose[@]}" run --rm --no-deps -T api timeout 60 resume-builder init-db
+quiet timeout 90 "${compose[@]}" run --rm --no-deps -T -e VIRTUAL_HOST= -e LETSENCRYPT_HOST= api timeout 60 resume-builder init-db
 failure='Application startup failed; inspect this Compose project privately. No automatic rollback.'
 quiet timeout 180 "${compose[@]}" up -d --no-deps --force-recreate --wait --wait-timeout 120 api worker importer
 
