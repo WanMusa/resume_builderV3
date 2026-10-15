@@ -260,6 +260,11 @@ server, never in the extension. Prefer a scoped server credential where supporte
 No bucket is created and no object is made public. Store durable bucket/object
 keys; a future authenticated download route can issue short-lived signed URLs.
 Supabase calls have timeouts and persist sanitized HTTP errors, not response bodies.
+Readable resume artifacts intentionally contain personal data. Local files are
+owner-only (0600) in private artifact directories (0700), but **are not encrypted
+by this application**. Use an encrypted VPS disk/volume and encrypted backups
+where required; protect inbox archives and PostgreSQL backups too. The local
+fallback is not a public file server or a secrets store.
 
 ## Environment reference
 
@@ -292,6 +297,7 @@ Supabase calls have timeouts and persist sanitized HTTP errors, not response bod
    cd /opt/resume_builderV3
    mkdir -p /opt/resume_builderV3/data /opt/resume_builderV3/inbox/json /opt/resume_builderV3/inbox/csv
    sudo chown -R 10001:10001 /opt/resume_builderV3/data /opt/resume_builderV3/inbox
+   sudo chmod 700 /opt/resume_builderV3/data /opt/resume_builderV3/inbox
    chmod 600 /opt/resume_builderV3/.env
    docker compose build
    docker compose run --rm api resume-builder init-db

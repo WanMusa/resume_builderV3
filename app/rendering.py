@@ -1,11 +1,13 @@
 """Deterministic JSON/Markdown renderer; DOCX is deliberately not implemented."""
 
 import json
+import os
 from pathlib import Path
 
 
 def render_package(package: dict, output_dir: Path) -> list[Path]:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output_dir.chmod(0o700)
     resume = package["resume"]
     identity = resume["identity"]
     lines = [f"# {identity['name']}", identity.get("contact", ""), "",
@@ -32,7 +34,10 @@ def render_package(package: dict, output_dir: Path) -> list[Path]:
     for name, content in contents.items():
         path = output_dir / name
         temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(content, encoding="utf-8")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(content)
         temporary.replace(path)
         paths.append(path)
     return paths

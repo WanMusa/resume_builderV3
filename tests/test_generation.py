@@ -1,4 +1,5 @@
 import json
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,8 +37,11 @@ def test_mock_package_fixed_facts_render_and_storage(settings, job, tmp_path):
     assert "NOT FOR SUBMISSION" in files[1].read_text()
     storage = LocalStorage(tmp_path / "storage")
     for file in files:
+        assert stat.S_IMODE(file.stat().st_mode) == 0o600
+        assert stat.S_IMODE(file.parent.stat().st_mode) == 0o700
         result = storage.upload(file, f"job-id/{file.name}")
         assert Path(result["local_path"]).read_bytes() == file.read_bytes()
+        assert stat.S_IMODE(Path(result["local_path"]).stat().st_mode) == 0o600
     with pytest.raises(ValueError):
         storage.upload(files[0], "../escape")
 

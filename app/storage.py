@@ -15,8 +15,10 @@ class LocalStorage:
         target = (self.root / key).resolve()
         if not target.is_relative_to(self.root) or target == self.root:
             raise ValueError("Unsafe artifact object key")
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target.parent.chmod(0o700)
         shutil.copyfile(path, target)
+        target.chmod(0o600)
         return {"backend": "local", "bucket": None, "object_key": key,
                 "local_path": str(target)}
 
