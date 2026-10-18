@@ -77,7 +77,7 @@ def retry_job(session, job_id: str) -> Job:
 
 def process_one(session_factory, settings) -> bool:
     # Lazy imports allow intake and API use without renderer/provider initialization.
-    from app.generation import generate_package
+    from app.generation import EvidenceValidationError, generate_package
     from app.rendering import render_package
     from app.storage import get_storage
 
@@ -147,6 +147,8 @@ def process_one(session_factory, settings) -> bool:
                 job = session.get(Job, job_id)
                 job.status = "failed" if job.attempts >= settings.max_attempts else "queued"
                 job.error = f"{type(exc).__name__}: Job processing failed"
+                if isinstance(exc, EvidenceValidationError):
+                    job.error = f"Evidence validation [{exc.reason}]: {EvidenceValidationError.MESSAGES[exc.reason]}"
                 job.lease_until = None
                 job.lease_token = None
                 session.commit()

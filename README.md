@@ -433,6 +433,12 @@ Live generated drafts finish as `needs_review` rather than claiming semantic
 fact verification. Source facts remain deterministic, but summaries/letters must
 be checked before submission.
 
+Failed jobs report fixed evidence-validation reasons for unknown evidence IDs,
+repeated achievement IDs, or omitted critical achievements. Other exception
+details remain redacted to avoid exposing private input or provider responses.
+An existing failed job retains its old error until retried; retrying live
+generation can make additional paid provider calls.
+
 Workers claim work in short PostgreSQL transactions using `FOR UPDATE SKIP LOCKED`,
 increment attempts, and use expiring leases with ownership tokens. Expired work
 can be reclaimed after a crash. Checkpoint writes are fenced against stale workers;

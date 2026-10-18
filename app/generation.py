@@ -9,6 +9,18 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class EvidenceValidationError(ValueError):
+    MESSAGES = {
+        "unknown_evidence": "Provider referenced unknown or unselected evidence",
+        "repeated_achievements": "Provider repeated achievement IDs",
+        "missing_critical": "Provider omitted critical achievements",
+    }
+
+    def __init__(self, reason: Literal["unknown_evidence", "repeated_achievements", "missing_critical"]):
+        self.reason = reason
+        super().__init__(self.MESSAGES[reason])
+
+
 class StrictOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -167,12 +179,12 @@ def generate_package(job_payload: dict, settings) -> dict:
     if (not set(resume.achievement_ids) <= achievements.keys()
             or not set(resume.expertise_ids) <= expertise.keys()
             or not set(letter.evidence_ids) <= achievements.keys()):
-        raise ValueError("Provider referenced unknown or unselected evidence")
+        raise EvidenceValidationError("unknown_evidence")
     if len(set(resume.achievement_ids)) != len(resume.achievement_ids):
-        raise ValueError("Provider repeated achievement IDs")
+        raise EvidenceValidationError("repeated_achievements")
     critical = {r["id"] for r in evidence["achievements"] if r.get("critical")}
     if not critical <= set(resume.achievement_ids):
-        raise ValueError("Provider omitted critical achievements")
+        raise EvidenceValidationError("missing_critical")
     role_ids = {r["id"] for r in base["fixed"]["experience"]}
     if any(r["experience_id"] not in role_ids for r in achievements.values()):
         raise ValueError("Evidence references an unknown experience")

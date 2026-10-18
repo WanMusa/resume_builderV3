@@ -356,6 +356,25 @@ def test_worker_error_does_not_persist_exception_response(database, payload, pip
     assert "secret-key" not in job.error
 
 
+@pytest.mark.parametrize("reason", ["unknown_evidence", "repeated_achievements", "missing_critical"])
+def test_worker_reports_safe_evidence_validation(database, payload, pipeline, monkeypatch, reason):
+    from app.generation import EvidenceValidationError
+
+    factory, settings = database
+    intake(factory, payload)
+
+    def fail(payload, settings):
+        raise EvidenceValidationError(reason)
+
+    monkeypatch.setattr("app.generation.generate_package", fail)
+    assert process_one(factory, settings)
+    job = get_job(factory)
+    assert job.status == "queued"
+    assert job.error == f"Evidence validation [{reason}]: {EvidenceValidationError.MESSAGES[reason]}"
+    with factory() as session:
+        assert session.scalar(select(GeneratedDocument)) is None
+
+
 def test_bounded_attempts_and_manual_retry(database, payload, pipeline, monkeypatch):
     factory, settings = database
     intake(factory, payload)
