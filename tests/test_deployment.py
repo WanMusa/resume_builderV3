@@ -64,7 +64,9 @@ def server(tmp_path):
     binaries.mkdir()
     real_git = shutil.which("git")
     (binaries / "git").write_text(
-        f'#!/bin/bash\nif [[ "$*" == "remote get-url --all origin" ]]; then\n'
+        '#!/bin/bash\n'
+        'if [[ "$1" == checkout && "${TEST_FAIL_CHECKOUT:-}" == 1 ]]; then exit 1; fi\n'
+        'if [[ "$*" == "remote get-url --all origin" ]]; then\n'
         f'  echo "{ORIGIN}"\nelse\n  exec "{real_git}" "$@"\nfi\n'
     )
     (binaries / "docker").write_text("""#!/bin/bash
@@ -301,7 +303,10 @@ def test_secret_free_check_failure(monkeypatch, capsys):
 
 
 def test_files_checked_without_generation(tmp_path):
-    settings = Settings(_env_file=None, assets_dir=ROOT / "assets", prompts_dir=ROOT / "prompts",
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    shutil.copyfile(ROOT / "assets/base_resume_example.json", assets / "base_resume.json")
+    settings = Settings(_env_file=None, assets_dir=assets, prompts_dir=ROOT / "prompts",
                         data_dir=tmp_path / "data", inbox_dir=tmp_path / "inbox/json")
     settings.data_dir.mkdir()
     settings.inbox_dir.mkdir(parents=True)
@@ -312,7 +317,10 @@ def test_files_checked_without_generation(tmp_path):
 
 
 def test_runtime_files_need_read_not_write_access(tmp_path, monkeypatch):
-    settings = Settings(_env_file=None, assets_dir=ROOT / "assets", prompts_dir=ROOT / "prompts",
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    shutil.copyfile(ROOT / "assets/base_resume_example.json", assets / "base_resume.json")
+    settings = Settings(_env_file=None, assets_dir=assets, prompts_dir=ROOT / "prompts",
                         data_dir=tmp_path / "data", inbox_dir=tmp_path / "inbox/json")
     settings.data_dir.mkdir()
     settings.inbox_dir.mkdir(parents=True)
@@ -330,6 +338,42 @@ def test_runtime_files_need_read_not_write_access(tmp_path, monkeypatch):
     monkeypatch.setattr(deployment.os, "access", lambda path, mode: False)
     with pytest.raises(ValueError):
         deployment.check_files(settings)
+
+
+def test_private_resume_untracking_preserves_uploaded_bytes(server):
+    checkout, remote, _, second, deploy, _ = server
+    assert deploy(second).returncode == 0
+    assets = remote / "assets"
+    assets.mkdir()
+    (assets / "base_resume.json").write_text('{"original": true}\n')
+    git(remote, "add", "assets/base_resume.json")
+    git(remote, "commit", "-qm", "legacy tracked resume")
+    legacy = git(remote, "rev-parse", "HEAD")
+    assert deploy(legacy).returncode == 0
+    private = checkout / "assets/base_resume.json"
+    uploaded = b'{"private": "retain every byte"}\r\n'
+    private.write_bytes(uploaded)
+    git(remote, "rm", "--cached", "assets/base_resume.json")
+    with (remote / ".gitignore").open("a") as stream:
+        stream.write("assets/base_resume.json\n")
+    git(remote, "add", ".gitignore")
+    git(remote, "commit", "-qm", "private runtime resume")
+    target = git(remote, "rev-parse", "HEAD")
+    (checkout / "app/version.py").write_text("unrelated edit")
+    assert "tracked edits" in deploy(target).stderr
+    assert private.read_bytes() == uploaded
+    git(checkout, "restore", "app/version.py")
+    failed = deploy(target, secrets={"TEST_FAIL_CHECKOUT": "1"})
+    assert "Checkout refused" in failed.stderr
+    assert private.read_bytes() == uploaded
+    assert not list(checkout.parent.glob(".resume-builder-resume.*"))
+    result = deploy(target)
+    assert result.returncode == 0, result.stderr
+    assert private.read_bytes() == uploaded
+    assert git(checkout, "ls-files", "--", "assets/base_resume.json") == ""
+    assert git(checkout, "status", "--porcelain") == ""
+    assert deploy(target).returncode == 0
+    assert private.read_bytes() == uploaded
 
 
 def test_workflow_guards_and_shell_syntax():

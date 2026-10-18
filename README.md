@@ -291,10 +291,19 @@ a green CI job alone does not establish that the deploy job ran.
 It fetches default-branch history but checks out only the requested revision,
 refuses dirty/staged tracked changes, local divergence, untracked collisions,
 and additional untracked source/assets/prompts. It never force-resets or cleans.
-Tracked edits to `assets/base_resume.json` or prompts **block deployment rather
-than being overwritten**. Back up private evidence/prompts outside the checkout
-before arranging an intentional update; do not commit private career data to
-this public repository. This workflow does not implement private asset overrides.
+`assets/base_resume.json` is private, ignored runtime data. Deployment preserves
+it byte-for-byte, including the transition from older revisions that tracked it.
+Only when the target revision no longer tracks the resume does deployment move
+the private file into a restricted temporary directory outside the checkout,
+remove its Git index entry, and restore the original file after checkout.
+An exit trap also restores it on failure; restoration refuses to overwrite any
+unexpected file and reports the retained backup location instead. Unrelated
+tracked edits (including prompts) still block deployment. Fresh deployments copy
+the example to the private runtime path and explicitly report that it must be
+replaced before live generation. Docker images exclude the private resume and
+contain example data only; Compose mounts the VPS assets at runtime.
+Do not commit private career data to this public repository. Ignoring/untracking
+a file does not remove its contents from previous commits.
 Ignored `.env` settings are retained except for supplied runtime secret updates.
 Generated `data/`, inbox JSON/CSV, archive and quarantine contents are retained.
 Only the existing tracked inbox `.gitkeep` placeholders are allowed

@@ -6,6 +6,7 @@ COPY pyproject.toml README.md LICENSE /app/
 COPY app /app/app
 RUN pip install --no-cache-dir .
 COPY assets /app/assets
+RUN cp /app/assets/base_resume_example.json /app/assets/base_resume.json
 COPY prompts /app/prompts
 RUN mkdir -p /app/data /app/inbox/json /app/inbox/csv && chown -R app:app /app/data /app/inbox
 USER app

@@ -67,11 +67,7 @@ while IFS= read -r -d '' entry; do
         [a-z]|S) die 'Clear assume-unchanged/skip-worktree flags and review tracked edits before deploying.' ;;
     esac
 done < <(git ls-files -v -z)
-if git rev-parse --verify HEAD >/dev/null 2>&1; then
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-        die 'Back up tracked edits (including assets/prompts) before deploying.'
-    fi
-else
+if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
     bootstrap_contents
     [[ -z "$(git ls-files)" ]] || die 'Incomplete bootstrap has staged files.'
 fi
@@ -91,6 +87,38 @@ if git rev-parse --verify HEAD >/dev/null 2>&1; then
         die 'Stale deployment or divergent local history; refusing to downgrade or overwrite.'
 fi
 check_runtime_paths < <(git ls-tree -rz --name-only "$sha" -- .env data inbox)
+resume_path=assets/base_resume.json
+[[ ! -L assets && ! -L "$resume_path" && ( ! -e "$resume_path" || -f "$resume_path" ) ]] ||
+    die 'Private resume must be a regular file in a real assets directory.'
+if git cat-file -e "$sha:$resume_path" 2>/dev/null; then
+    git diff --quiet && git diff --cached --quiet ||
+        die 'Back up tracked edits (including assets/prompts) before deploying.'
+else
+    git diff --quiet -- . ":(exclude)$resume_path" &&
+        git diff --cached --quiet -- . ":(exclude)$resume_path" ||
+        die 'Back up tracked edits (including assets/prompts) before deploying.'
+    if git cat-file -e "HEAD:$resume_path" 2>/dev/null && [[ -f "$resume_path" ]]; then
+        resume_backup="$(mktemp -d "$HOME/projects/.resume-builder-resume.XXXXXX")"
+        restore_resume() {
+            if [[ -f "$resume_backup/base_resume.json" ]]; then
+                if [[ -e "$resume_path" || -L "$resume_path" ]]; then
+                    printf 'Private resume retained at %s; refusing to overwrite checkout file.\n' "$resume_backup" >&2
+                    return 1
+                fi
+                mkdir -p -- assets
+                mv -- "$resume_backup/base_resume.json" "$resume_path" || return 1
+            fi
+            rmdir -- "$resume_backup"
+        }
+        trap restore_resume EXIT
+        mv -- "$resume_path" "$resume_backup/base_resume.json"
+    fi
+    if git ls-files --error-unmatch -- "$resume_path" >/dev/null 2>&1; then
+        # Remove only the index entry; checkout must leave the private file untouched.
+        failure='Could not stop tracking the private resume; its working file was not removed.'
+        quiet git rm --cached --force -- "$resume_path"
+    fi
+fi
 # Git normally overwrites ignored files. Explicitly protect all local collisions.
 while IFS= read -r -d '' path; do
     if [[ -e "$path" || -L "$path" ]]; then
@@ -101,12 +129,20 @@ done < <(git ls-tree -rz --name-only "$sha")
 failure='Checkout refused; preserve local files and resolve collisions manually.'
 quiet git checkout --quiet --detach --no-overwrite-ignore "$sha"
 [[ "$(git rev-parse HEAD)" == "$sha" ]] || die 'Checkout did not match tested SHA.'
+if [[ -n "${resume_backup:-}" ]]; then
+    restore_resume || die 'Restore the preserved private resume before continuing.'
+    trap - EXIT
+fi
 while IFS= read -r -d '' path; do
     case "$path" in
-        */__pycache__/*) ;;
+        assets/base_resume.json|*/__pycache__/*) ;;
         *) die 'Untracked source/assets/prompts would enter the image; back them up outside the checkout.' ;;
     esac
 done < <(git ls-files --others -z -- app assets prompts)
+if [[ ! -e "$resume_path" && -f assets/base_resume_example.json ]]; then
+    cp -- assets/base_resume_example.json "$resume_path"
+    printf 'Created private base resume from example; replace it before live generation.\n'
+fi
 for path in data inbox inbox/json inbox/csv; do
     [[ -d "$path" && ! -L "$path" ]] || die 'Runtime bind paths must remain real directories.'
 done
