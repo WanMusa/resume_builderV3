@@ -13,3 +13,4 @@ inbox/json/*
 inbox/csv/*
 !inbox/json/.gitkeep
 !inbox/csv/.gitkeep
+assets/base_resume.json
