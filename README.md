@@ -89,11 +89,13 @@ application database.
 
 Use the existing `postgres` service on the external `ai_platform` Docker network
 from `WanMusa/ai-platform_infra`. No infra changes are included here.
-Ask the database operator to provision a dedicated LOGIN role and database,
-for example `resume_builder`, with no SUPERUSER, CREATEDB, or CREATEROLE privileges.
+Automated deployment provisions the dedicated `resume_builder` LOGIN role and
+database, with no SUPERUSER, CREATEDB, or CREATEROLE privileges.
 The role should own only its app database/schema and be able to create the app's
 tables, indexes and constraints there. Restrict unrelated database access.
-The app never needs infrastructure administrator credentials.
+The app never receives infrastructure administrator credentials. Deployment uses
+local `psql` admin access inside the existing `postgres` container; it creates no
+new PostgreSQL server and never changes the Gmail sorter role/database.
 
 Set a URL of the form:
 
@@ -117,6 +119,11 @@ description; normalization is used only for deduplication hashes.
 
 The **Test and deploy** Actions workflow tests Python 3.12 with `.[test]`, checks
 the deployment shell/Compose file and builds the Docker image on pull requests.
+CI starts an isolated PostgreSQL 17 service with disposable test-only credentials.
+It tests role/database provisioning, repeated schema bootstrap preserving existing
+data, and connectivity/permissions using the app's non-admin login. Generation
+tests use the example fixture and mocked HTTP responses, never your private
+resume or a live OpenAI key. No CI test makes paid LLM calls.
 Only a push/merge to the default branch (`main`) can then deploy, after that
 revision's CI passes. PRs never receive deployment secrets. If the repository's
 default branch is renamed, update the workflow's `push.branches` filter too.
@@ -140,16 +147,35 @@ the complete OpenSSH known-hosts line(s) for `VPS_HOST`, e.g.
 key or fingerprint through the VPS provider console or another independently
 trusted channel. An unverified `ssh-keyscan` result is not verification. Hashed
 known-hosts entries also work. Host key changes fail closed; independently
-verify rotation before updating the secret. Actions uses strict checking and
-never transfers the runtime `.env`. **SSH secrets alone are not server setup.**
+verify rotation before updating the secret. Actions uses strict checking.
 
-On the VPS, install Bash, Git, `flock` (util-linux), GNU `timeout` (coreutils),
+Add these runtime secrets in the repository's Actions settings:
+
+| Secret | Purpose |
+| --- | --- |
+| `DATABASE_PASSWORD` | Password assigned to the dedicated `resume_builder` role |
+| `API_TOKEN` | Bearer token accepted by the inbox API |
+| `OPENAI_API_KEY` | Runtime generation key, only needed when using `PROVIDER=openai` |
+| `DB_USER` | Optional existing PostgreSQL admin login used for local provisioning; defaults to the container's `POSTGRES_USER` |
+
+Secrets travel in the encrypted SSH input stream, not command arguments or logs.
+Deployment creates `.env` from `.env.example` if missing, then atomically merges
+nonempty runtime secrets with mode `0600`. Existing non-secret settings and omitted
+secrets are retained. First deployment requires `DATABASE_PASSWORD` and `API_TOKEN`.
+`DB_USER` is not the application's login and is not written into its runtime file.
+The existing PostgreSQL container must allow its admin login over the local Unix
+socket; no database admin password is sent to the app. A supplied database password
+is applied only to `resume_builder`; use distinct passwords for different apps.
+
+On the VPS, install Python 3, Bash, Git, `flock` (util-linux), GNU `timeout` (coreutils),
 Docker Engine and Compose v2 supporting `up --wait` (2.20+ recommended).
 The deploy account must be able to run Docker noninteractively (Docker access
 is effectively root access; use a trusted account). It needs outbound HTTPS to
 GitHub and the image/package registries. Provision the existing shared
-`ai_platform` network and the dedicated non-admin PostgreSQL LOGIN role/database
-described above; deployment will **not** create infrastructure, database users,
+`ai_platform` network and the existing `postgres` container.
+Deployment creates the app role/database if absent and synchronizes its password
+on redeployment. It refuses an existing privileged app role or a database owned
+by another role instead of adopting them. It does **not** create infrastructure
 or another PostgreSQL container. The app role must own its dedicated database,
 have USAGE/CREATE on its schema, and own/have read/write access to its app tables.
 Do not use an infra admin role or a database belonging to another app.
@@ -158,18 +184,11 @@ The fixed checkout directory is **`$HOME/projects/resume_builderV3`**, relative
 to `VPS_USER`'s home. The fixed Compose project is **`resume_builder_v3`**.
 Its only accepted origin is
 **`https://github.com/WanMusa/resume_builderV3.git`** (public, no Git credentials).
-Prepare an empty directory with the runtime file, or a clean checkout of that
-origin. Deployment creates missing runtime directories automatically. Bootstrap refuses other
+Deployment creates a missing checkout directory, runtime file and runtime
+directories automatically. An existing checkout must use the documented origin.
+Bootstrap refuses other
 files; it also safely resumes an interrupted Git initialization with no HEAD.
 Do not place it inside another checkout or behind symlinks.
-
-```bash
-APP_DIR="$HOME/projects/resume_builderV3"
-mkdir -p "$APP_DIR"
-# Securely create $APP_DIR/.env yourself, using .env.example as a reference.
-# Never overwrite an existing runtime .env with the example.
-chmod 600 "$APP_DIR/.env"
-```
 
 The existing Actions workflow invokes `scripts/deploy.sh`, which creates missing
 `data/`, `inbox/`, `inbox/json/`, and `inbox/csv/` and rejects symlinks/files in
@@ -179,8 +198,8 @@ GID, and their mode to `2770` (setgid, owner/group access, no other-user access)
 The helper runs as root with only the added CHOWN, FOWNER and DAC_READ_SEARCH
 capabilities; normal services keep their unprivileged user and dropped caps.
 No interactive sudo or ACL package is needed for a fresh deployment. Existing
-files are not recursively chowned/chmodded, and `.env` is never generated or
-overwritten. Setup failure prevents service shutdown/startup.
+files are not recursively chowned/chmodded. Runtime secret merging preserves
+other `.env` settings. Setup failure prevents service shutdown/startup.
 
 If migrating existing input/output files, back them up, then grant the
 Dockerfile's **UID 10001** read/write/traverse access to all runtime
@@ -196,13 +215,17 @@ runs. The script checks the resulting runtime access inside the image as UID
 migration plan rather than recursive deployment-time ownership changes.
 Keep assets and prompts readable by UID 10001 but not writable by the container.
 
-In the VPS `.env`, set `DATABASE_URL`/`DATABASE_PASSWORD` for the dedicated role,
-a long random `API_TOKEN`, and `ALLOW_UNAUTHENTICATED=false`. Keep container paths
+The generated `.env` defaults to the dedicated app `DATABASE_URL` and
+`ALLOW_UNAUTHENTICATED=false`; Actions supplies the password and API token.
+Automatic provisioning supports only `resume_builder@postgres:5432/resume_builder`,
+not arbitrary admin/application URLs. Keep container paths
 `DATA_DIR=/app/data`, `INBOX_DIR=/app/inbox/json`, `ASSETS_DIR=/app/assets`,
 `PROMPTS_DIR=/app/prompts`. Configure Supabase credentials/bucket only if using
 that backend; preflight validates required settings but does not upload a test
 object. `PROVIDER=mock` remains mock unless **you** change the runtime file.
-Live generation also requires your real, validated non-example career evidence;
+Deployment does not require an OpenAI key or non-example evidence to start.
+Those checks happen only when a live generation job actually runs. Live generation
+still requires your real, validated non-example career evidence and a runtime key;
 deployment never switches providers or makes paid inference calls.
 
 API binding stays **127.0.0.1:8000**. If another service uses that port, set
@@ -260,7 +283,8 @@ authenticated queue API, not to Supabase or the model backend. Changing
 
 `scripts/deploy.sh TESTED_FULL_SHA main` is the reusable entry point, streamed
 over verified SSH from the tested checkout. Docker/maintenance commands receive
-`/dev/null` as stdin so they cannot consume the remaining streamed script. Do not
+`/dev/null` as stdin so they cannot consume the remaining streamed script, except
+the admin `psql` command whose stdin is the generated app-only bootstrap SQL. Do not
 run it with an untested SHA. A completed deployment prints
 `Deployment healthy at tested revision <SHA>` after checking all three services;
 a green CI job alone does not establish that the deploy job ran.
@@ -271,8 +295,9 @@ Tracked edits to `assets/base_resume.json` or prompts **block deployment rather
 than being overwritten**. Back up private evidence/prompts outside the checkout
 before arranging an intentional update; do not commit private career data to
 this public repository. This workflow does not implement private asset overrides.
-Ignored `.env`, generated `data/`, inbox JSON/CSV, archive and quarantine contents
-are retained. Only the existing tracked inbox `.gitkeep` placeholders are allowed
+Ignored `.env` settings are retained except for supplied runtime secret updates.
+Generated `data/`, inbox JSON/CSV, archive and quarantine contents are retained.
+Only the existing tracked inbox `.gitkeep` placeholders are allowed
 under runtime paths. There is no `down`, volume deletion or system pruning.
 
 Preflight/build failure leaves running services untouched. Builds and commands
@@ -282,8 +307,9 @@ VPS; **do not paste `.env`, expanded Compose config, or raw app/build logs into
 Actions/issues**. Only this project's `api`, `worker`, and `importer` are managed;
 existing containers from another directory with the same project name are refused.
 
-After building and checking auth/configuration, bind permissions and real DB
-connectivity/role readiness, deployment stops this app's importer/worker, runs
+After building, merging runtime secrets, provisioning the app database and checking
+auth/configuration, bind permissions and real DB connectivity/role readiness,
+deployment stops this app's importer/worker, runs
 the supported `resume-builder init-db`, then recreates these three services.
 `init-db` is idempotent `create_all`, **not a migration system**. Future schema
 changes need a separately reviewed migration/backup plan. No unrelated DB is

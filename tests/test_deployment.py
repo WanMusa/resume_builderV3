@@ -1,3 +1,5 @@
+import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -7,6 +9,7 @@ import pytest
 
 from app import deployment
 from app.config import Settings
+from app.provision import bootstrap_sql
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +37,9 @@ def server(tmp_path):
         (folder / ".gitkeep").touch()
     (remote / ".gitignore").write_text(".env\ndata/\ninbox/*/*\n!inbox/*/.gitkeep\n")
     (remote / "docker-compose.yml").write_text("services: {}\n")
+    (remote / "scripts").mkdir()
+    shutil.copyfile(ROOT / "scripts/configure_runtime.py", remote / "scripts/configure_runtime.py")
+    shutil.copyfile(ROOT / ".env.example", remote / ".env.example")
     git(remote, "add", ".")
     git(remote, "commit", "-qm", "first")
     first = git(remote, "rev-parse", "HEAD")
@@ -88,12 +94,12 @@ fi
            "GIT_CONFIG_GLOBAL": str(gitconfig), "DOCKER_CALLS": str(tmp_path / "docker-calls"),
            "FAIL_DOCKER": ""}
 
-    def deploy(sha=second, failure="", state="running 0", drain_stdin=False):
+    def deploy(sha=second, failure="", state="running 0", drain_stdin=False, secrets=None):
         return subprocess.run(
             ["bash", "-s", "--", sha, "main"],
             input=script.read_text(),
             env={**env, "FAIL_DOCKER": failure, "CONTAINER_STATE": state,
-                 "DRAIN_DOCKER_STDIN": "1" if drain_stdin else "0"},
+                 "DRAIN_DOCKER_STDIN": "1" if drain_stdin else "0", **(secrets or {})},
             text=True, capture_output=True, timeout=15,
         )
 
@@ -113,9 +119,11 @@ def test_bootstrap_exact_sha_and_preserve_runtime(server):
     assert calls.read_text().index("build api") < calls.read_text().index("--user 0:")
     assert calls.read_text().index("--user 0:") < calls.read_text().index("python -m app.deployment")
     maintenance = [line for line in calls.read_text().splitlines() if " run --rm " in line]
-    assert len(maintenance) == 3
+    assert len(maintenance) == 4
     assert all("-e VIRTUAL_HOST= -e LETSENCRYPT_HOST=" in command for command in maintenance)
     assert calls.read_text().index("init-db") < calls.read_text().index("up -d")
+    assert calls.read_text().index("app.provision") < calls.read_text().index("app.deployment")
+    assert "psql -X" in calls.read_text()
     assert deploy(second).returncode == 0
     assert deploy(second).returncode == 0  # reruns of the same revision are safe
     stale = deploy(first)
@@ -166,17 +174,24 @@ def test_runtime_symlinks_refused_before_permission_changes(server, path):
     assert "--user 0:" not in calls.read_text()
 
 
-def test_checkout_and_env_still_require_manual_setup(server):
+def test_first_deployment_creates_checkout_and_env_from_secrets(server):
     checkout, _, _, _, deploy, calls = server
     shutil.rmtree(checkout)
-    result = deploy()
-    assert result.returncode != 0
-    assert "as a real directory" in result.stderr
-    assert not checkout.exists()
-    assert "build api" not in calls.read_text()
+    result = deploy(secrets={"DEPLOY_DATABASE_PASSWORD": "fixture-db",
+                             "DEPLOY_API_TOKEN": "fixture-token",
+                             "DEPLOY_OPENAI_API_KEY": "fixture-key"})
+    assert result.returncode == 0, result.stderr
+    assert checkout.is_dir()
+    settings = Settings(_env_file=checkout / ".env")
+    assert settings.database_password == "fixture-db"
+    assert settings.api_token == "fixture-token"
+    assert settings.openai_api_key == "fixture-key"
+    assert "fixture-key" not in result.stdout + result.stderr + calls.read_text()
 
 
-@pytest.mark.parametrize("failure", ["network inspect", "build api", "--user 0:", "python -m app.deployment"])
+@pytest.mark.parametrize("failure", ["network inspect", "build api", "--user 0:",
+                                    "python -m app.provision", "exec -i",
+                                    "python -m app.deployment"])
 def test_preflight_failure_keeps_services_running_and_hides_output(server, failure):
     _, _, _, _, deploy, calls = server
     result = deploy(failure=failure)
@@ -231,13 +246,13 @@ def test_hidden_tracked_edits_refused(server, flag):
 
 
 def test_missing_env_and_wrong_origin_refused(server):
-    checkout, _, first, _, deploy, calls = server
+    checkout, _, _, second, deploy, calls = server
     (checkout / ".env").unlink()
-    assert "readable runtime .env" in deploy().stderr
+    assert "Runtime settings update failed" in deploy().stderr
     assert "build api" not in calls.read_text()
     assert "stop --timeout" not in calls.read_text()
     (checkout / ".env").touch()
-    assert deploy(first).returncode == 0
+    assert deploy(second).returncode == 0
     git(checkout, "config", "remote.origin.url", "https://example.invalid/other.git")
     assert "origin configuration" in deploy().stderr
 
@@ -268,10 +283,12 @@ def test_configuration_production_guards():
     deployment.check_configuration(settings)
     for changes in ({"api_token": None}, {"allow_unauthenticated": True},
                     {"database_url": "sqlite://"}, {"database_password": None},
-                    {"provider": "openai"}, {"storage_backend": "supabase"},
+                    {"storage_backend": "supabase"},
                     {"data_dir": Path("/tmp/unpersisted")}):
         with pytest.raises(ValueError):
             deployment.check_configuration(settings.model_copy(update=changes))
+    deployment.check_configuration(settings.model_copy(update={"provider": "openai",
+                                                               "openai_api_key": None}))
 
 
 def test_secret_free_check_failure(monkeypatch, capsys):
@@ -325,4 +342,160 @@ def test_workflow_guards_and_shell_syntax():
     assert "cancel-in-progress: false" in workflow
     assert "contents: read" in workflow
     assert "ssh-keyscan" not in workflow
+    for key in ("DATABASE_PASSWORD", "OPENAI_API_KEY", "API_TOKEN", "DB_USER"):
+        assert f"secrets.{key}" in workflow
+    assert "CORE_TEST_DATABASE_URL" in workflow
+    assert "PROVISION_TEST_CONTAINER" in workflow
+    assert "resume-builder init-db\n          resume-builder init-db" in workflow
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
+
+
+def runtime_module():
+    spec = importlib.util.spec_from_file_location("configure_runtime", ROOT / "scripts/configure_runtime.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_runtime_secrets_merge_preserves_settings(tmp_path):
+    runtime = runtime_module()
+    target = tmp_path / ".env"
+    target.write_text("# private runtime\nPROVIDER=openai\nDATABASE_PASSWORD=old\nCUSTOM=value\n")
+    runtime.configure(tmp_path, {"DEPLOY_DATABASE_PASSWORD": "new-password",
+                                "DEPLOY_OPENAI_API_KEY": "fixture-key",
+                                "DEPLOY_API_TOKEN": "fixture-token"})
+    settings = Settings(_env_file=target)
+    assert settings.database_password == "new-password"
+    assert settings.openai_api_key == "fixture-key"
+    assert settings.api_token == "fixture-token"
+    assert settings.provider == "openai"
+    assert "CUSTOM=value" in target.read_text()
+    runtime.configure(tmp_path, {})
+    assert Settings(_env_file=target).openai_api_key == "fixture-key"
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_runtime_secret_invalid_input_does_not_overwrite(tmp_path):
+    runtime = runtime_module()
+    target = tmp_path / ".env"
+    target.write_text("API_TOKEN=original\n")
+    with pytest.raises(ValueError):
+        runtime.configure(tmp_path, {"DEPLOY_API_TOKEN": "first\nSECOND=value"})
+    assert target.read_text() == "API_TOKEN=original\n"
+
+
+@pytest.mark.parametrize("password", [
+    "fixture ${UNSET_TEST_VARIABLE} $dollar 'quote' \\path #hash",
+    "literal\\nnot-a-newline",
+    "backslash\\'quote",
+    "ends-with-backslash\\",
+    'double"quote',
+])
+def test_compose_preserves_secret_special_characters(tmp_path, password):
+    if not shutil.which("docker"):
+        pytest.skip("Docker Compose CLI is required to verify runtime env parsing")
+    if subprocess.run(["docker", "compose", "version"], capture_output=True).returncode:
+        pytest.skip("Docker Compose CLI is not usable in this environment")
+    target = tmp_path / ".env"
+    target.touch()
+    runtime_module().configure(tmp_path, {"DEPLOY_DATABASE_PASSWORD": password})
+    compose = tmp_path / "compose.yml"
+    compose.write_text("services:\n  app:\n    image: example\n    env_file: .env\n")
+    result = subprocess.run(
+        ["docker", "compose", "--env-file", str(target), "-f", str(compose),
+         "config", "--format", "json"],
+        text=True, capture_output=True, check=True,
+    )
+    config = json.loads(result.stdout)
+    # `compose config` re-escapes literal dollar signs for reuse as a Compose file.
+    assert config["services"]["app"]["environment"]["DATABASE_PASSWORD"] == password.replace("$", "$$")
+
+
+def test_runtime_first_deployment_requires_secrets(tmp_path):
+    runtime = runtime_module()
+    with pytest.raises(ValueError, match="requires"):
+        runtime.configure(tmp_path, {})
+    assert not (tmp_path / ".env").exists()
+
+
+@pytest.mark.parametrize("url", [
+    "postgresql+psycopg://postgres@postgres/resume_builder",
+    "postgresql+psycopg://resume_builder@other/resume_builder",
+    "postgresql+psycopg://resume_builder@postgres/gmail_sorter",
+    "postgresql+psycopg://resume_builder@postgres:5433/resume_builder",
+])
+def test_database_bootstrap_refuses_unrelated_targets(url):
+    with pytest.raises(ValueError, match="dedicated"):
+        bootstrap_sql(Settings(_env_file=None, database_url=url, database_password="fixture"))
+
+
+def test_database_bootstrap_escapes_password_and_limits_privileges():
+    statement = bootstrap_sql(Settings(
+        _env_file=None,
+        database_url="postgresql+psycopg://resume_builder@postgres/resume_builder",
+        database_password="test'; DROP DATABASE other; --",
+    ))
+    assert "PASSWORD 'test''; DROP DATABASE other; --'" in statement
+    assert "NOSUPERUSER NOCREATEDB NOCREATEROLE" in statement
+    assert "Refusing to adopt" in statement
+    assert "CREATE DATABASE resume_builder OWNER resume_builder" in statement
+    assert "DROP DATABASE" not in statement.replace("'test''; DROP DATABASE other; --'", "")
+
+
+def test_database_bootstrap_requires_password():
+    with pytest.raises(ValueError, match="DATABASE_PASSWORD"):
+        bootstrap_sql(Settings(
+            _env_file=None, database_password=None,
+            database_url="postgresql+psycopg://resume_builder@postgres/resume_builder",
+        ))
+
+
+@pytest.mark.skipif(not os.environ.get("PROVISION_TEST_CONTAINER"),
+                    reason="Requires the isolated PostgreSQL CI service")
+def test_postgres_provisioning_schema_and_connectivity():
+    from sqlalchemy import select
+    from app.db import init_db, make_engine, make_session_factory
+    from app.models import Batch
+
+    settings = Settings(_env_file=None,
+                        database_url=os.environ["CORE_TEST_DATABASE_URL"],
+                        database_password=os.environ["CORE_TEST_DATABASE_PASSWORD"])
+    statement = bootstrap_sql(settings.model_copy(update={
+        "database_url": "postgresql+psycopg://resume_builder@postgres/resume_builder"
+    }))
+    container = os.environ["PROVISION_TEST_CONTAINER"]
+    command = ["docker", "exec", "-i", container, "psql", "-X", "-U", "postgres",
+               "-d", "postgres", "--set", "ON_ERROR_STOP=1"]
+    snapshot_sql = """
+        SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolcanlogin, rolpassword
+        FROM pg_authid WHERE rolname <> 'resume_builder' ORDER BY rolname;
+        SELECT datname, pg_get_userbyid(datdba)
+        FROM pg_database WHERE datname <> 'resume_builder' ORDER BY datname;
+    """
+    before = subprocess.run([*command, "-At"], input=snapshot_sql, text=True,
+                            capture_output=True, check=True).stdout
+    engine = make_engine(settings)
+    try:
+        init_db(engine)
+        factory = make_session_factory(engine)
+        with factory() as session:
+            batch = Batch(content_hash="migration-test", source="migration-test",
+                          status="accepted", errors=[])
+            session.add(batch)
+            session.commit()
+            batch_id = batch.id
+        for _ in range(2):
+            subprocess.run(command, input=statement, text=True, capture_output=True, check=True)
+            init_db(engine)
+            deployment.check_database(settings, ready=True)
+        after = subprocess.run([*command, "-At"], input=snapshot_sql, text=True,
+                               capture_output=True, check=True).stdout
+        assert before == after
+        with factory() as session:
+            batch = session.scalar(select(Batch).where(Batch.id == batch_id))
+            assert batch.source == "migration-test"
+            session.delete(batch)
+            session.commit()
+    finally:
+        engine.dispose()

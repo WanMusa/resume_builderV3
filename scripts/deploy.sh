@@ -12,7 +12,7 @@ sha="${1:-}"
 branch="${2:-main}"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die 'Provide the full tested commit SHA.'
 [[ "$branch" =~ ^[a-zA-Z0-9._/-]+$ ]] || die 'Invalid default branch.'
-for command in git docker flock timeout; do
+for command in git docker flock timeout python3; do
     command -v "$command" >/dev/null || die "Install required command: $command."
 done
 git check-ref-format "refs/heads/$branch" >/dev/null || die 'Invalid default branch.'
@@ -22,9 +22,9 @@ quiet docker compose version
 
 deploy_dir="$HOME/projects/resume_builderV3"
 repo='https://github.com/WanMusa/resume_builderV3.git'
-[[ -d "$deploy_dir" && ! -L "$deploy_dir" ]] || die "Create $deploy_dir as a real directory."
-[[ -f "$deploy_dir/.env" && -r "$deploy_dir/.env" && ! -L "$deploy_dir/.env" ]] ||
-    die 'Create a readable runtime .env on the VPS; Actions never supplies it.'
+[[ ! -L "$HOME/projects" && ! -L "$deploy_dir" ]] || die 'Deployment directories must not be symlinks.'
+mkdir -p -- "$deploy_dir"
+[[ -d "$deploy_dir" ]] || die "Create $deploy_dir as a real directory."
 exec 9>"$HOME/projects/.resume_builderV3.deploy.lock"
 flock -n 9 || die 'Another deployment holds the VPS lock; retry later.'
 failure='Shared ai_platform network is missing; provision shared infrastructure first.'
@@ -111,6 +111,10 @@ for path in data inbox inbox/json inbox/csv; do
     [[ -d "$path" && ! -L "$path" ]] || die 'Runtime bind paths must remain real directories.'
 done
 
+failure='Runtime settings update failed; supply DATABASE_PASSWORD/API_TOKEN on first deployment and check .env permissions.'
+quiet python3 scripts/configure_runtime.py
+unset DEPLOY_DATABASE_PASSWORD DEPLOY_OPENAI_API_KEY DEPLOY_API_TOKEN
+
 compose=(docker compose --project-name resume_builder_v3 --project-directory "$deploy_dir"
     --env-file "$deploy_dir/.env" -f "$deploy_dir/docker-compose.yml")
 failure='Invalid Compose settings; review runtime .env privately.'
@@ -138,7 +142,17 @@ for path in ("/app/data", "/app/inbox", "/app/inbox/json", "/app/inbox/csv"):
     finally:
         os.close(descriptor)
 ' "$(id -g)"
-failure='Deployment preflight failed: check auth/provider/storage settings, dedicated PostgreSQL role, assets/prompts and UID 10001 bind permissions. No services were stopped.'
+failure='Database provisioning failed; check the existing postgres container, DB_USER admin access and dedicated app ownership. No services were stopped.'
+# The admin username is expanded inside the existing PostgreSQL container.
+# shellcheck disable=SC2016
+if ! timeout 60 "${compose[@]}" run --rm --no-deps -T -e VIRTUAL_HOST= -e LETSENCRYPT_HOST= \
+        api python -m app.provision </dev/null 2>/dev/null |
+    timeout 60 docker exec -i -e "PROVISION_DB_USER=${DEPLOY_DB_USER:-}" postgres sh -c \
+        'exec psql -X -U "${PROVISION_DB_USER:-$POSTGRES_USER}" -d postgres --set ON_ERROR_STOP=1' \
+        >/dev/null 2>&1; then
+    die "$failure"
+fi
+failure='Deployment preflight failed: check auth/storage settings, database connectivity, assets/prompts and UID 10001 bind permissions. No services were stopped.'
 quiet timeout 90 "${compose[@]}" run --rm --no-deps -T -e VIRTUAL_HOST= -e LETSENCRYPT_HOST= api timeout 60 python -m app.deployment
 
 # The CLI has no drain handler. SIGINT reaches its KeyboardInterrupt handler;

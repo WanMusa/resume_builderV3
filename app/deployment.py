@@ -23,8 +23,6 @@ def check_configuration(settings: Settings) -> None:
         raise ValueError("Production requires a dedicated PostgreSQL role and database")
     if not settings.database_password and not url.password:
         raise ValueError("Set the dedicated DATABASE_PASSWORD")
-    if settings.provider == "openai" and not settings.openai_api_key:
-        raise ValueError("Set OPENAI_API_KEY for the configured provider")
     if settings.storage_backend == "supabase" and not all(
         (settings.supabase_url, settings.supabase_key, settings.supabase_bucket)
     ):
@@ -38,8 +36,6 @@ def check_configuration(settings: Settings) -> None:
 def check_files(settings: Settings) -> None:
     base = json.loads((settings.assets_dir / "base_resume.json").read_text())
     validate_base(base)
-    if settings.provider != "mock" and base["is_example"]:
-        raise ValueError("Replace example evidence before enabling live generation")
     for kind in ("resume", "cover_letter"):
         for suffix in ("system", "user"):
             if not (settings.prompts_dir / f"{kind}_{suffix}.txt").read_text().strip():

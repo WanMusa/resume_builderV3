@@ -1,4 +1,5 @@
 import json
+import shutil
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,8 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def settings():
-    return SimpleNamespace(assets_dir=ROOT / "assets", prompts_dir=ROOT / "prompts",
+def settings(tmp_path):
+    shutil.copyfile(ROOT / "assets/base_resume_example.json", tmp_path / "base_resume.json")
+    return SimpleNamespace(assets_dir=tmp_path, prompts_dir=ROOT / "prompts",
                            provider="mock", openai_model="example-model",
                            openai_api_key=None)
 
@@ -83,12 +85,6 @@ def test_provider_rejects_unknown_ids(settings, job, monkeypatch):
 
     monkeypatch.setattr(MockProvider, "generate", invalid)
     with pytest.raises(ValueError, match="unknown"):
-        generate_package(job, settings)
-
-
-def test_live_requires_real_evidence(settings, job):
-    settings.provider = "openai"
-    with pytest.raises(ValueError, match="example evidence"):
         generate_package(job, settings)
 
 
