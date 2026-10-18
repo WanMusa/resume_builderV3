@@ -91,12 +91,14 @@ resume_path=assets/base_resume.json
 [[ ! -L assets && ! -L "$resume_path" && ( ! -e "$resume_path" || -f "$resume_path" ) ]] ||
     die 'Private resume must be a regular file in a real assets directory.'
 if git cat-file -e "$sha:$resume_path" 2>/dev/null; then
-    git diff --quiet && git diff --cached --quiet ||
+    if ! git diff --quiet || ! git diff --cached --quiet; then
         die 'Back up tracked edits (including assets/prompts) before deploying.'
+    fi
 else
-    git diff --quiet -- . ":(exclude)$resume_path" &&
-        git diff --cached --quiet -- . ":(exclude)$resume_path" ||
+    if ! git diff --quiet -- . ":(exclude)$resume_path" ||
+        ! git diff --cached --quiet -- . ":(exclude)$resume_path"; then
         die 'Back up tracked edits (including assets/prompts) before deploying.'
+    fi
     if git cat-file -e "HEAD:$resume_path" 2>/dev/null && [[ -f "$resume_path" ]]; then
         resume_backup="$(mktemp -d "$HOME/projects/.resume-builder-resume.XXXXXX")"
         restore_resume() {
