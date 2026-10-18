@@ -462,7 +462,11 @@ education, certifications, and identity. The model outputs only a summary and
 evidence selections for resumes; Python inserts achievement text verbatim.
 Cover-letter paragraphs reference supporting evidence IDs. Unknown IDs,
 duplicate achievement IDs, omitted critical achievements, and invalid JSON fail
-validation. Semantic correctness of arbitrary prose is **not** guaranteed by JSON
+validation. Each OpenAI request constrains evidence ID fields to enums containing
+only the IDs supplied in that request; cover-letter evidence IDs reference
+achievements, not role or expertise IDs. Empty expertise permits only an empty
+selection. Python still validates returned IDs rather than trusting the provider.
+Semantic correctness of arbitrary prose is **not** guaranteed by JSON
 validation; all live drafts require review.
 
 Evidence selection ranks whole achievements by keyword overlap with the job.

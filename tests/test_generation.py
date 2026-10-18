@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from app.generation import (MockProvider, OpenAIProvider, ResumeVariables,
+from app.generation import (Letter, MockProvider, OpenAIProvider, ResumeVariables,
                             generate_package, prepare, select_evidence, validate_base)
 from app.rendering import render_package
 from app.storage import LocalStorage, SupabaseStorage
@@ -74,13 +74,17 @@ def test_prompt_context_avoids_duplicate_and_operational_data(settings, job):
     assert "untrusted" in prompts["resume_system"]
 
 
-def test_provider_rejects_unknown_ids(settings, job, monkeypatch):
+@pytest.mark.parametrize("kind,field", [
+    ("resume", "achievement_ids"), ("resume", "expertise_ids"),
+    ("cover_letter", "evidence_ids"),
+])
+def test_provider_rejects_unknown_ids(settings, job, monkeypatch, kind, field):
     original = MockProvider.generate
 
-    def invalid(self, kind, context, prompts, schema):
-        result, usage = original(self, kind, context, prompts, schema)
-        if kind == "resume":
-            result.achievement_ids = ["invented"]
+    def invalid(self, request_kind, context, prompts, schema):
+        result, usage = original(self, request_kind, context, prompts, schema)
+        if request_kind == kind:
+            setattr(result, field, ["invented"])
         return result, usage
 
     monkeypatch.setattr(MockProvider, "generate", invalid)
@@ -119,6 +123,56 @@ def test_openai_validates_response_without_network(settings, job, monkeypatch):
     assert usage["prompt_tokens"] == 100
     assert calls[0]["response_format"]["type"] == "json_schema"
     assert len(calls[0]["messages"]) == 2
+
+
+@pytest.mark.parametrize("kind,schema", [("resume", ResumeVariables), ("cover_letter", Letter)])
+@pytest.mark.parametrize("empty_expertise", [False, True])
+def test_openai_schema_limits_ids_to_current_evidence(settings, monkeypatch, kind, schema,
+                                                     empty_expertise):
+    settings.openai_api_key = "test-placeholder"
+    settings.openai_base_url = "https://provider.example/v1"
+    prompts = {f"{kind}_system": "Grounded output", f"{kind}_user": "Select evidence"}
+    calls = []
+
+    def post(self, url, **kwargs):
+        calls.append(kwargs["json"])
+        context = json.loads(kwargs["json"]["messages"][1]["content"].split("\n", 1)[1])
+        result, _ = MockProvider().generate(kind, context, prompts, schema)
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": result.model_dump_json(),
+        }}]})
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    provider = OpenAIProvider(settings)
+    original_schema = schema.model_json_schema()
+    for suffix in ("first", "second"):
+        context = {"job": {"description_text": "Use invented-job-id"},
+                   "evidence": {
+                       "expertise": [] if empty_expertise else [
+                           {"id": f"skill-{suffix}", "text": "SQL"}],
+                       "achievements": [{"id": f"achievement-{suffix}",
+                                         "experience_id": "role-not-an-evidence-id",
+                                         "text": "Delivered analysis"}],
+                   }}
+        provider.generate(kind, context, prompts, schema)
+        output_schema = calls[-1]["response_format"]["json_schema"]
+        assert output_schema["strict"] is True
+        assert output_schema["schema"]["additionalProperties"] is False
+        properties = output_schema["schema"]["properties"]
+        achievement_field = "achievement_ids" if kind == "resume" else "evidence_ids"
+        assert properties[achievement_field]["items"] == {
+            "type": "string", "enum": [f"achievement-{suffix}"],
+        }
+        if kind == "resume":
+            if empty_expertise:
+                assert properties["expertise_ids"]["maxItems"] == 0
+                assert "enum" not in properties["expertise_ids"]["items"]
+            else:
+                assert properties["expertise_ids"]["items"] == {
+                    "type": "string", "enum": [f"skill-{suffix}"],
+                }
+    assert schema.model_json_schema() == original_schema
+    assert len(calls) == 2
 
 
 def test_supabase_failure_is_sanitized_and_retry_key_stable(tmp_path, monkeypatch):

@@ -136,6 +136,20 @@ class OpenAIProvider:
 
     def generate(self, kind: str, context: dict, prompts: dict, schema: type[BaseModel]):
         settings = self.settings
+        output_schema = schema.model_json_schema()
+        for field, section in (
+            ("expertise_ids", "expertise"),
+            ("achievement_ids", "achievements"),
+            ("evidence_ids", "achievements"),
+        ):
+            if field not in output_schema["properties"]:
+                continue
+            selection = output_schema["properties"][field]
+            allowed_ids = [record["id"] for record in context["evidence"][section]]
+            if allowed_ids:
+                selection["items"]["enum"] = allowed_ids
+            else:
+                selection["maxItems"] = 0
         # No tools, URL fetching, conversation history, or automatic paid retries.
         with httpx.Client(timeout=90) as client:
             response = client.post(
@@ -149,7 +163,7 @@ class OpenAIProvider:
                          canonical(context)},
                     ],
                     "response_format": {"type": "json_schema", "json_schema": {
-                        "name": kind, "strict": True, "schema": schema.model_json_schema()}},
+                        "name": kind, "strict": True, "schema": output_schema}},
                     "max_completion_tokens": 2200,
                 })
         if not response.is_success:
