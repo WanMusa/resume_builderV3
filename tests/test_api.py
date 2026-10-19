@@ -83,3 +83,26 @@ def test_rerender_api_requires_auth_checkpoint_and_terminal_job(client):
     detail = client.get(f"/jobs/{job_id}", headers=HEADERS).json()
     assert detail["generated"] == {"saved": "unchanged"} and detail["artifacts"] == []
     assert client.post(route, headers=HEADERS).status_code == 409
+
+
+def test_regenerate_requires_explicit_paid_confirmation_and_keeps_checkpoint(client):
+    from sqlalchemy.orm import Session
+
+    payload = json.loads((ROOT / "examples/job-envelope.json").read_text())
+    job_id = client.post("/batches", json=payload, headers=HEADERS).json()["job_ids"][0]
+    route = f"/jobs/{job_id}/regenerate"
+    assert client.post(route).status_code == 401
+    assert client.post(route, headers=HEADERS).status_code == 400
+    confirmed = "?confirm_paid_generation=true"
+    assert client.post("/jobs/missing/regenerate" + confirmed, headers=HEADERS).status_code == 404
+    assert client.post(route + confirmed, headers=HEADERS).status_code == 409
+    with Session(client.app.state.engine) as session:
+        session.get(Job, job_id).status = "needs_review"
+        session.add(GeneratedDocument(job_id=job_id, package={"saved": "original"}))
+        session.commit()
+    response = client.post(route + confirmed, headers=HEADERS)
+    assert response.status_code == 202 and response.json()["status"] == "queued"
+    detail = client.get(f"/jobs/{job_id}", headers=HEADERS).json()
+    assert detail["generated"] == {"saved": "original", "regeneration_requested": True}
+    assert client.post(route + confirmed, headers=HEADERS).status_code == 409
+    assert client.post(f"/jobs/{job_id}/rerender", headers=HEADERS).status_code == 409

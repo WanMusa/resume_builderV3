@@ -13,7 +13,7 @@ from app.config import Settings
 from app.db import make_engine, make_session_factory
 from app.importer import EnvelopeValidationError, import_envelope
 from app.models import Batch, Job
-from app.worker import rerender_job, retry_job
+from app.worker import regenerate_job, rerender_job, retry_job
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 
@@ -144,6 +144,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def rerender(job_id: str, db=Depends(session)):
         try:
             job = rerender_job(db, job_id)
+        except LookupError:
+            raise HTTPException(404, "Job not found") from None
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        db.commit()
+        return job_view(job)
+
+    @router.post("/jobs/{job_id}/regenerate", status_code=202)
+    def regenerate(job_id: str, confirm_paid_generation: bool = False, db=Depends(session)):
+        if not confirm_paid_generation:
+            raise HTTPException(400, "Explicit confirm_paid_generation=true is required")
+        try:
+            job = regenerate_job(db, job_id)
         except LookupError:
             raise HTTPException(404, "Job not found") from None
         except ValueError as exc:

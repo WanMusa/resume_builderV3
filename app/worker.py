@@ -83,6 +83,8 @@ def rerender_job(session, job_id: str) -> Job:
     checkpoint = session.scalar(select(GeneratedDocument).where(GeneratedDocument.job_id == job_id))
     if checkpoint is None:
         raise ValueError("Re-render requires an existing generated checkpoint")
+    if checkpoint.package.get("regeneration_requested"):
+        raise ValueError("Regeneration is pending; retry the failed job instead")
     result = session.execute(update(Job).where(
         Job.id == job_id, Job.status.in_(("failed", "completed", "needs_review")),
     ).values(status="queued", attempts=0, error=None, lease_until=None,
@@ -94,10 +96,18 @@ def rerender_job(session, job_id: str) -> Job:
     return job
 
 
+def regenerate_job(session, job_id: str) -> Job:
+    """Explicitly request paid generation; retain old content until replacement succeeds."""
+    job = rerender_job(session, job_id)
+    checkpoint = session.scalar(select(GeneratedDocument).where(GeneratedDocument.job_id == job_id))
+    checkpoint.package = {**checkpoint.package, "regeneration_requested": True}
+    return job
+
+
 def process_one(session_factory, settings) -> bool:
     # Lazy imports allow intake and API use without renderer/provider initialization.
     from app.generation import EvidenceValidationError, generate_package
-    from app.rendering import render_package
+    from app.rendering import PackageFormatError, render_package
     from app.storage import get_storage
 
     claimed = claim_job(session_factory, settings)
@@ -110,13 +120,25 @@ def process_one(session_factory, settings) -> bool:
         with session_factory() as session:
             document = session.scalar(select(GeneratedDocument).where(GeneratedDocument.job_id == job_id))
             package = document.package if document else None
-        if package is None:
+        if package is None or package.get("regeneration_requested"):
+            previous = package
             package = generate_package(claimed["payload"], settings)
             if not isinstance(package, dict) or not all(key in package for key in ("resume", "cover_letter", "provenance")):
                 raise ValueError("Generated package requires resume, cover_letter, and provenance")
             with session_factory() as session:
                 _fence(session, job_id, token, settings)
-                session.add(GeneratedDocument(job_id=job_id, package=package))
+                if previous is None:
+                    session.add(GeneratedDocument(job_id=job_id, package=package))
+                else:
+                    package["previous_versions"] = [
+                        *previous.get("previous_versions", []),
+                        {k: v for k, v in previous.items()
+                         if k not in ("previous_versions", "regeneration_requested")},
+                    ]
+                    document = session.scalar(select(GeneratedDocument).where(
+                        GeneratedDocument.job_id == job_id,
+                    ))
+                    document.package = package
                 session.commit()
 
         with session_factory() as session:
@@ -138,8 +160,16 @@ def process_one(session_factory, settings) -> bool:
             with session_factory() as session:
                 _fence(session, job_id, token, settings)
                 session.commit()
-            metadata = storage.upload(content, f"{job_id}/{token}/{filename}")
             with session_factory() as session:
+                # Root filenames are overwriteable. Keep the job locked through
+                # upload so a replacement lease cannot upload ahead of this one.
+                owner = session.scalar(select(Job).where(
+                    Job.id == job_id, Job.lease_token == token, Job.lease_until > utcnow(),
+                    Job.status.in_(ACTIVE_STATES),
+                ).with_for_update())
+                if owner is None:
+                    raise LostLease("Worker no longer owns the job lease")
+                metadata = storage.upload(content, filename)
                 _fence(session, job_id, token, settings)
                 artifact = session.scalar(select(Artifact).where(
                     Artifact.job_id == job_id, Artifact.filename == filename,
@@ -147,7 +177,9 @@ def process_one(session_factory, settings) -> bool:
                 if artifact is None:
                     artifact = Artifact(job_id=job_id, filename=filename)
                     session.add(artifact)
-                artifact.kind = Path(filename).stem
+                artifact.kind = ("resume" if filename.endswith("-Resume.docx") else
+                                 "cover_letter" if filename.endswith("-Cover Letter.docx") else
+                                 Path(filename).stem)
                 artifact.backend = metadata["backend"]
                 artifact.bucket = metadata.get("bucket")
                 artifact.object_key = metadata["object_key"]
@@ -174,6 +206,8 @@ def process_one(session_factory, settings) -> bool:
                 job.error = f"{type(exc).__name__}: Job processing failed"
                 if isinstance(exc, EvidenceValidationError):
                     job.error = f"Evidence validation [{exc.reason}]: {EvidenceValidationError.MESSAGES[exc.reason]}"
+                elif isinstance(exc, PackageFormatError):
+                    job.error = str(exc)
                 job.lease_until = None
                 job.lease_token = None
                 session.commit()

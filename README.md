@@ -14,13 +14,15 @@ capture. Prompts and authoritative career evidence are version-controlled files.
 - Dedicated PostgreSQL workflow tables, polling workers, execution leases,
   bounded attempts, durable generated JSON, resumable rendering/upload.
 - Mock provider (default, no external services), OpenAI-compatible structured JSON
-  provider, evidence selection, immutable fixed sections, usage/config hashes.
+  provider, concise tailored prose with source citations, immutable fixed facts,
+  usage/config hashes.
 - Generated JSON checkpoint in PostgreSQL; resume and cover-letter DOCX artifacts
   rendered entirely in memory and uploaded to private Supabase Storage.
   There is no local final-output fallback. Supabase is **not** the workflow database.
 - Authenticated operator endpoints and non-root Docker services.
 - **Not implemented:** PDF export, browser UI, signed download URLs,
-  approval/regeneration UI, CSV processing, cost dashboard, automatic migrations
+  approval/regeneration UI (operator regeneration API is available), CSV processing,
+  cost dashboard, automatic migrations
   for future schema revisions. Back up PostgreSQL and artifact storage before upgrades.
 
 The committed career data is **fictional example evidence**, not a real resume.
@@ -212,7 +214,7 @@ Dockerfile's **UID 10001** read/write/traverse access to all runtime
 directories and read access to existing files, including archives/quarantine
 and nested generated data. Existing input/output files and Git's `.gitkeep`
 placeholders do not need container write permission; input moves use directory
-permissions, and generated outputs use new lease-specific paths.
+permissions. New final documents are uploaded from memory, not written to these directories.
 Use narrowly scoped ownership/ACL changes, **not chmod 777**. Docker bind mounts
 hide the image's directory ownership. Existing runtime paths must also remain
 accessible to the deployment account for Git checkout before the setup helper
@@ -435,7 +437,7 @@ New outputs are Word documents, not Markdown.
 
 ### Re-render an existing checkpoint without LLM calls
 
-After upgrading from Markdown/local output, use the authenticated
+For a checkpoint already using the tailored-prose format, use the authenticated
 `POST /jobs/JOB_UUID/rerender` endpoint (public prefix: `/resume`). It accepts
 `completed`, `needs_review`, or `failed` jobs only when a generated JSON checkpoint
 exists. It queues Word rendering and Supabase upload, clears superseded artifact
@@ -451,23 +453,49 @@ Old local files are not deleted automatically. No new local document or JSON
 output files are written. Missing templates or Supabase configuration fail
 explicitly rather than falling back to Markdown or local storage.
 
+### Regenerate old selection-only content or intentionally rewrite prose
+
+Old ID-selection checkpoints cannot become succinct tailored prose merely by
+rerendering. The renderer rejects them with an actionable error, rather than
+dumping their source evidence or silently making paid calls.
+
+Explicitly request new generation using the **current** source resume, prompts
+and provider settings:
+
+```bash
+curl -fsS -X POST -H "Authorization: Bearer $TOKEN" "https://wanagents.duckdns.org/resume/jobs/JOB_UUID/regenerate?confirm_paid_generation=true"
+```
+
+This endpoint requires authentication, explicit paid-generation confirmation,
+a terminal job (`completed`, `needs_review` or `failed`), and an existing checkpoint.
+It queues fresh resume and letter generation and clears old artifact metadata.
+The original generated content remains in PostgreSQL while generation is pending;
+after successful generation it is archived under `previous_versions` in the new
+checkpoint. No history is sent to the LLM. Upload/render retries reuse the new
+checkpoint without paying again. A failed generation retains the old content and
+pending request; use `/retry` to resume it. Automatic generation retries can incur
+additional provider charges up to `MAX_ATTEMPTS`.
+
 ### State and retries
 
 Normal flow: `queued → generating → rendered → uploaded → completed`.
 Live generated drafts finish as `needs_review` rather than claiming semantic
-fact verification. Source facts remain deterministic, but summaries/letters must
-be checked before submission.
+fact verification. Fixed headers remain deterministic; all rewritten claims,
+including expertise, summaries, achievements and letters, need factual review.
 
 Failed jobs report fixed evidence-validation reasons for unknown evidence IDs,
-repeated achievement IDs, or omitted critical achievements. Other exception
+repeated achievement IDs, omitted critical achievements, incomplete role coverage,
+or exceeded word budgets. Other exception
 details remain redacted to avoid exposing private input or provider responses.
 An existing failed job retains its old error until retried; retrying live
 generation can make additional paid provider calls.
 
 Workers claim work in short PostgreSQL transactions using `FOR UPDATE SKIP LOCKED`,
 increment attempts, and use expiring leases with ownership tokens. Expired work
-can be reclaimed after a crash. Checkpoint writes are fenced against stale workers;
-render paths are lease-specific. Do not reduce the default lease below the maximum
+can be reclaimed after a crash. Checkpoint writes are fenced against stale workers.
+PostgreSQL holds the job row lock during each root-filename upload, preventing
+a replacement lease from uploading ahead of an in-flight predecessor.
+Do not reduce the default lease below the maximum
 generation/storage operation duration. No exactly-once model-call guarantee is
 possible across a crash between provider response and checkpoint commit.
 
@@ -476,33 +504,44 @@ Errors automatically requeue up to `MAX_ATTEMPTS`, then become `failed`.
 Rendering/upload failures **do not repeat generation** once the generated package
 is committed. Successfully recorded artifacts are skipped on retry.
 Changing prompts or base evidence does not silently rewrite an existing generated
-checkpoint. Intentional regeneration/version management is a future feature;
-retry is for recovery, not paid regeneration.
+checkpoint. `/regenerate?confirm_paid_generation=true` explicitly requests new
+paid generation; `/retry` is for recovering the current work.
 
 ## Generation and factual accuracy
 
 Edit `assets/base_resume.json` and the four files under `prompts/`.
 Stable evidence IDs link achievements to code-controlled roles, dates, employers,
-education, certifications, and identity. The model outputs only a summary and
-evidence selections for resumes; Python inserts achievement text verbatim.
-Cover-letter paragraphs reference supporting evidence IDs. Unknown IDs,
-duplicate achievement IDs, omitted critical achievements, and invalid JSON fail
-validation. Each OpenAI request constrains evidence ID fields to enums containing
-only the IDs supplied in that request; cover-letter evidence IDs reference
-achievements, not role or expertise IDs. Empty expertise permits only an empty
-selection. Python still validates returned IDs rather than trusting the provider.
+education, certifications, and identity. Following V2, the model writes only
+the variable prose: short role-positioning labels, career profile, expertise
+area/description pairs, and a tailored summary plus highlight/detail achievement
+bullets for each role. Fixed role headers, chronology and qualifications remain
+Python-controlled. Supporting details, the original profile, role descriptions
+and projects are context for rewriting, not a visible source-text appendix.
+The complete original resume is preserved as `source_resume` in the checkpoint;
+the base file is never modified during generation.
+
+Expertise and achievements carry internal evidence citations. These IDs are
+validated but never printed in either Word document. Each OpenAI request
+constrains citation IDs and role IDs to current-source enums. Python additionally
+rejects unknown/cross-role achievement citations, repeated achievements, omitted
+critical evidence, missing/duplicated roles and invalid JSON. Returned roles are
+reassembled in source order. Empty source expertise allows only an empty list.
 Semantic correctness of arbitrary prose is **not** guaranteed by JSON
 validation; all live drafts require review.
 
-Evidence selection ranks whole achievements by keyword overlap with the job.
-It always keeps critical achievements and at least one per role, with a soft
-target of 12 records; supporting details are never globally stripped or truncated.
-Expertise remains compact and complete. Review selection behavior on your real
-resume before production; overly large evidence may exceed model limits, and the
-bounded output schema permits at most 16 achievements.
+The target is about **2-3 pages**, not a guaranteed layout-engine page count.
+Hard limits: profile 90 words; up to 8 expertise items, each 20 words including
+its label; each role summary 60 words; up to 3 achievement bullets per role,
+each 35 words including its highlight; all generated resume text at most
+900 words. The prompt targets 650-800 words for four roles, rather than filling
+every maximum. Cover letters are capped at 350 words. Actual pagination depends
+on fixed sections, fonts and Word's layout engine; inspect the final document.
 
-Requests omit capture metadata, fixed sections, duplicate extracted requirements,
-and prior jobs. Resume and letter use separate bounded requests with independent
+Requests include full career background, achievements and supporting details
+without keyword-based preselection or truncation. They omit contact details,
+fixed qualifications, capture metadata, duplicate extracted requirements and prior
+jobs. A larger input is intentional factual context, not a requirement to print
+more text. Resume and letter use separate bounded requests with independent
 instructions and the same authoritative evidence, not generated claims as facts.
 The combined validated package is the generation checkpoint; if the second call
 fails before that checkpoint, retry repeats both calls. Per-call checkpoints and
@@ -528,11 +567,33 @@ No bucket is created and no object is made public. Store durable bucket/object
 keys; a future authenticated download route can issue short-lived signed URLs.
 Supabase calls have timeouts and persist sanitized HTTP errors, not response bodies.
 The worker checks the private bucket before any generation call. Python renders
-`resume.docx` and `cover_letter.docx` using the unchanged V2 templates under
+two Word documents using the unchanged V2 templates under
 `assets/templates/`, retaining their page setup and applying V2 Lato/blue resume
-and Aptos cover-letter formatting. Fixed identity, roles, education,
-certifications, references, and additional fixed sections come from the saved
-package, never model-editable formatting fields. The JSON package remains in
+and Aptos cover-letter formatting: career profile, expertise, professional
+experience, education/certifications, and references. Education is printed once
+(structured education records take precedence over their duplicate strings).
+Bold expertise labels and achievement highlights are paired with normal-weight
+descriptions; section and role headings stay with the following paragraph.
+Fixed identity, role headers, education, certifications and references come from
+the saved package. Other source sections remain context, not an automatic appendix.
+Live documents do not include a draft banner; `needs_review` still requires review.
+Mock/example documents retain their NOT FOR SUBMISSION banner.
+
+V2 filename convention (invalid filename characters are stripped):
+
+```text
+CandidateName-JobTitle-Company-Resume.docx
+CandidateName-JobTitle-Company-Cover Letter.docx
+```
+
+Both files are uploaded directly to the configured bucket **root**: no job,
+lease or timestamp subfolders. Reprocessing the same name/title/company overwrites
+the matching files (`upsert=true`), as in V2. Different jobs using identical names
+share those output objects; older artifact records are not immutable document
+versions, and concurrent jobs' latest successful uploads win. Existing objects in
+old subfolders are not automatically deleted.
+
+The JSON package remains in
 PostgreSQL; it is not duplicated as an output artifact. Documents are uploaded
 from memory with the Word MIME type; `local_path` is null for new artifacts.
 Protect Supabase objects, inbox archives, and PostgreSQL backups as personal data.

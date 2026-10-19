@@ -8,6 +8,7 @@ from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
+from urllib.parse import unquote
 
 import pytest
 import httpx
@@ -23,7 +24,8 @@ from app.contracts import EnvelopeContract, JobContract
 from app.db import init_db, make_engine, make_session_factory
 from app.importer import EnvelopeValidationError, import_envelope, scan_inbox
 from app.models import Artifact, Batch, GeneratedDocument, Job, JobInput, utcnow
-from app.worker import LostLease, _fence, claim_job, process_one, rerender_job, retry_job
+from app.worker import (LostLease, _fence, claim_job, process_one, regenerate_job,
+                        rerender_job, retry_job)
 
 
 @pytest.fixture
@@ -310,7 +312,7 @@ def test_worker_success(database, payload, pipeline):
     with factory() as session:
         assert session.scalar(select(GeneratedDocument)).package["resume"] == {}
         artifact = session.scalar(select(Artifact))
-        assert artifact.object_key.startswith(f"{job.id}/")
+        assert artifact.object_key == "resume.docx"
         assert artifact.backend == "supabase" and artifact.local_path is None
     assert not settings.data_dir.exists()
     assert calls == {"generation": 1, "render": 1, "upload": 1}
@@ -365,7 +367,8 @@ def test_worker_error_does_not_persist_exception_response(database, payload, pip
     assert "secret-key" not in job.error
 
 
-@pytest.mark.parametrize("reason", ["unknown_evidence", "repeated_achievements", "missing_critical"])
+@pytest.mark.parametrize("reason", ["unknown_evidence", "repeated_achievements", "missing_critical",
+                                  "role_coverage", "content_length"])
 def test_worker_reports_safe_evidence_validation(database, payload, pipeline, monkeypatch, reason):
     from app.generation import EvidenceValidationError
 
@@ -482,6 +485,8 @@ def test_expired_renderer_cannot_upload(database, payload, pipeline, monkeypatch
 
 def test_stale_upload_cannot_persist_artifact_metadata(database, payload, pipeline, monkeypatch):
     factory, settings = database
+    if factory.kw["bind"].dialect.name == "postgresql":
+        pytest.skip("SQLite fault injection; PostgreSQL upload locking has separate coverage")
     intake(factory, payload)
     successor = {}
 
@@ -494,8 +499,7 @@ def test_stale_upload_cannot_persist_artifact_metadata(database, payload, pipeli
                 session.execute(update(Job).values(lease_until=utcnow() - timedelta(seconds=1)))
                 session.commit()
             successor.update(claim_job(factory, settings))
-            assert key.startswith(f"{successor['id']}/")
-            assert successor["token"] not in key
+            assert key == "resume.docx"
             return {"backend": "supabase", "object_key": key, "local_path": None}
 
     monkeypatch.setattr("app.storage.get_storage", lambda settings: Storage())
@@ -679,7 +683,7 @@ def test_checkpoint_to_word_to_supabase_without_llm_or_local_files(database, pay
 
     def upload(self, url, **kwargs):
         assert kwargs["headers"]["Content-Type"] == DOCX_CONTENT_TYPE
-        name = url.rsplit("/", 1)[-1]
+        name = unquote(url.rsplit("/", 1)[-1])
         uploaded[name] = Document(BytesIO(kwargs["content"]))
         return httpx.Response(200, json={})
 
@@ -689,7 +693,9 @@ def test_checkpoint_to_word_to_supabase_without_llm_or_local_files(database, pay
     monkeypatch.setattr(httpx.Client, "post", upload)
     assert process_one(factory, settings)
     assert get_job(factory).status == "needs_review"
-    assert set(uploaded) == {"resume.docx", "cover_letter.docx"}
+    assert len(uploaded) == 2
+    assert any(name.endswith("-Resume.docx") for name in uploaded)
+    assert any(name.endswith("-Cover Letter.docx") for name in uploaded)
     assert not settings.data_dir.exists()
     assert not list(settings.assets_dir.parent.glob("*.docx"))
     with factory() as session:
@@ -697,3 +703,108 @@ def test_checkpoint_to_word_to_supabase_without_llm_or_local_files(database, pay
         artifacts = list(session.scalars(select(Artifact)))
         assert len(artifacts) == 2
         assert all(a.backend == "supabase" and a.local_path is None for a in artifacts)
+        assert {a.kind for a in artifacts} == {"resume", "cover_letter"}
+        assert all(a.object_key == a.filename and "/" not in a.object_key for a in artifacts)
+
+
+def test_regeneration_preserves_old_versions_and_checkpoints_retry(database, payload, pipeline, monkeypatch):
+    factory, settings = database
+    calls, _ = pipeline
+    intake(factory, payload)
+    process_one(factory, settings)
+    job = get_job(factory)
+    with factory() as session:
+        original = copy.deepcopy(session.scalar(select(GeneratedDocument)).package)
+        regenerate_job(session, job.id)
+        session.commit()
+        checkpoint = session.scalar(select(GeneratedDocument))
+        assert checkpoint.package == {**original, "regeneration_requested": True}
+        assert session.scalar(select(Artifact)) is None
+    original_render = __import__("app.rendering", fromlist=["render_package"]).render_package
+
+    def fail(*args):
+        raise RuntimeError("Render failure after paid generation")
+
+    monkeypatch.setattr("app.rendering.render_package", fail)
+    process_one(factory, settings)
+    assert calls["generation"] == 2
+    with factory() as session:
+        checkpoint = session.scalar(select(GeneratedDocument))
+        assert checkpoint.package["previous_versions"] == [original]
+        assert not checkpoint.package.get("regeneration_requested")
+    monkeypatch.setattr("app.rendering.render_package", original_render)
+    process_one(factory, settings)
+    assert get_job(factory).status == "completed"
+    assert calls["generation"] == 2
+
+
+def test_failed_regeneration_does_not_erase_saved_content(database, payload, pipeline, monkeypatch):
+    factory, settings = database
+    intake(factory, payload)
+    process_one(factory, settings)
+    job = get_job(factory)
+    with factory() as session:
+        original = copy.deepcopy(session.scalar(select(GeneratedDocument)).package)
+        regenerate_job(session, job.id)
+        session.commit()
+
+    def fail(*args):
+        raise RuntimeError("Provider unavailable")
+
+    monkeypatch.setattr("app.generation.generate_package", fail)
+    process_one(factory, settings)
+    process_one(factory, settings)
+    assert get_job(factory).status == "failed"
+    with factory() as session:
+        assert session.scalar(select(GeneratedDocument)).package == {
+            **original, "regeneration_requested": True}
+        with pytest.raises(ValueError, match="Regeneration is pending"):
+            rerender_job(session, job.id)
+        retry_job(session, job.id)
+        session.commit()
+    assert get_job(factory).status == "queued"
+
+
+def test_legacy_render_failure_is_actionable_without_paid_calls(database, payload, pipeline, monkeypatch):
+    from app.rendering import PackageFormatError
+
+    factory, settings = database
+    intake(factory, payload)
+    with factory() as session:
+        session.add(GeneratedDocument(job_id=get_job(factory).id,
+                                      package=copy.deepcopy(pipeline[1])))
+        session.commit()
+
+    def fail(*args):
+        raise PackageFormatError()
+
+    monkeypatch.setattr("app.rendering.render_package", fail)
+    process_one(factory, settings)
+    assert pipeline[0]["generation"] == 0
+    assert "/regenerate" in get_job(factory).error
+
+
+def test_postgres_upload_lock_blocks_expired_lease_reclaim(database, payload, pipeline, monkeypatch):
+    factory, settings = database
+    if factory.kw["bind"].dialect.name != "postgresql":
+        pytest.skip("Requires CORE_TEST_DATABASE_URL pointing to PostgreSQL")
+    intake(factory, payload)
+    later = utcnow() + timedelta(seconds=settings.lease_seconds + 60)
+
+    class Storage:
+        def check_bucket(self):
+            pass
+
+        def upload(self, content, key):
+            assert key == "resume.docx"
+            monkeypatch.setattr("app.worker.utcnow", lambda: later)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                assert pool.submit(claim_job, factory, settings).result(timeout=5) is None
+            return {"backend": "supabase", "bucket": settings.supabase_bucket, "object_key": key}
+
+    monkeypatch.setattr("app.storage.get_storage", lambda settings: Storage())
+    assert process_one(factory, settings)
+    assert get_job(factory).attempts == 1
+    with factory() as session:
+        assert session.scalar(select(Artifact)) is None
+    assert claim_job(factory, settings) is not None

@@ -1,1 +1,10 @@
-Using the job and career evidence below, produce only the variable resume fields. Keep the summary under 120 words. Select at most 12 expertise IDs and 16 achievement IDs. Copy expertise_ids exactly from evidence.expertise[].id and achievement_ids exactly from evidence.achievements[].id. Never use experience_id, invent IDs, or change their spelling. Preserve critical evidence and career relevance. If the evidence does not support a requirement, do not claim it.
+Use the job, career background and complete source evidence below to write a tailored resume targeting about 2-3 pages once Python adds the fixed sections. Be selective; do not reproduce the lengthy source profile, platform descriptions, project details or supporting-detail lists.
+
+Hard word limits (stay comfortably below them):
+- target_role_tags: 1-3 short, factual positioning labels, at most 18 words combined.
+- career_profile: at most 90 words, focused on the target role's most relevant supported strengths.
+- areas_of_expertise: 4-8 relevant items when sufficient evidence exists, fewer if not. Each item has a short area label and a succinct description, at most 20 words combined. Cite exact evidence.expertise[].id values in evidence_ids.
+- professional_experience: return every background.experience[].id exactly once as experience_id. Each tailored_summary is at most 60 words describing the relevant scope and contribution. Include 1-3 strongest tailored_achievements where evidence exists, fewer for older or less relevant roles. Each bullet has a short boldable highlight and a complementary detail, at most 35 words combined. Cite exact evidence.achievements[].id values in evidence_ids, belonging to that experience_id.
+- ALL visible generated resume text combined: at most 900 words. Aim for 650-800 words for four roles, not the maximum in every section.
+
+Avoid repeating the same claim across the profile, expertise and role summaries. Prioritise supported outcomes over long responsibility lists. Summarise technical context instead of listing every tool or project detail. Preserve critical facts and all roles, but never pad a weakly matched role. Do not put citation IDs, section headings or fixed facts in the generated prose.

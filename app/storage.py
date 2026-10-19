@@ -31,8 +31,9 @@ class SupabaseStorage:
             raise ValueError("Supabase output bucket must be private")
 
     def upload(self, content: bytes, key: str) -> dict:
-        if not key.endswith(".docx") or any(part in ("", ".", "..") for part in key.split("/")):
-            raise ValueError("Output must have a safe Word document object key")
+        if (not key.endswith(".docx") or any(c in key for c in '/\\:*?"<>|')
+                or any(ord(c) < 32 for c in key)):
+            raise ValueError("Output must have a safe Word document filename at the bucket root")
         settings = self.settings
         url = (f"{settings.supabase_url.rstrip('/')}/storage/v1/object/"
                f"{quote(settings.supabase_bucket, safe='')}/{quote(key, safe='/')}")
