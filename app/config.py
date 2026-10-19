@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
-    storage_backend: Literal["local", "supabase"] = "local"
+    storage_backend: Literal["supabase"] = "supabase"
     supabase_url: str | None = None
     supabase_key: str | None = None
     supabase_bucket: str | None = None

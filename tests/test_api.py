@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.db import init_db
 from app.main import MAX_UPLOAD_BYTES, create_app
+from app.models import Artifact, GeneratedDocument, Job
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADERS = {"Authorization": "Bearer" + " " + "test-token"}
@@ -58,3 +59,27 @@ def test_upload_errors_and_size_limit(client):
 def test_api_refuses_implicit_unauthenticated_mode():
     with pytest.raises(RuntimeError, match="API_TOKEN"):
         create_app(Settings(_env_file=None, api_token=None, allow_unauthenticated=False))
+
+
+def test_rerender_api_requires_auth_checkpoint_and_terminal_job(client):
+    payload = json.loads((ROOT / "examples/job-envelope.json").read_text())
+    batch = client.post("/batches", json=payload, headers=HEADERS).json()
+    job_id = batch["job_ids"][0]
+    route = f"/jobs/{job_id}/rerender"
+    assert client.post(route).status_code == 401
+    assert client.post("/jobs/missing/rerender", headers=HEADERS).status_code == 404
+    assert client.post(route, headers=HEADERS).status_code == 409
+    from sqlalchemy.orm import Session
+
+    with Session(client.app.state.engine) as session:
+        session.get(Job, job_id).status = "needs_review"
+        session.add(GeneratedDocument(job_id=job_id, package={"saved": "unchanged"}))
+        session.add(Artifact(job_id=job_id, kind="resume", filename="resume.md",
+                             backend="local", object_key="old/resume.md",
+                             local_path="/app/data/old/resume.md"))
+        session.commit()
+    response = client.post(route, headers=HEADERS)
+    assert response.status_code == 202 and response.json()["status"] == "queued"
+    detail = client.get(f"/jobs/{job_id}", headers=HEADERS).json()
+    assert detail["generated"] == {"saved": "unchanged"} and detail["artifacts"] == []
+    assert client.post(route, headers=HEADERS).status_code == 409

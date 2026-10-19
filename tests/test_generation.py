@@ -1,16 +1,18 @@
 import json
 import shutil
-import stat
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from docx import Document
+from pydantic import ValidationError
 
 from app.generation import (Letter, MockProvider, OpenAIProvider, ResumeVariables,
                             generate_package, prepare, select_evidence, validate_base)
 from app.rendering import render_package
-from app.storage import LocalStorage, SupabaseStorage
+from app.storage import DOCX_CONTENT_TYPE, SupabaseStorage, get_storage
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,24 +30,100 @@ def job():
     return json.loads((ROOT / "examples/job-envelope.json").read_text())["jobs"][0]
 
 
-def test_mock_package_fixed_facts_render_and_storage(settings, job, tmp_path):
+def test_mock_package_fixed_facts_render_and_storage(settings, job, tmp_path, monkeypatch):
     package = generate_package(job, settings)
     base = json.loads((settings.assets_dir / "base_resume.json").read_text())
     assert package["resume"]["experience"] == base["fixed"]["experience"]
     assert package["resume"]["achievements"][0]["text"] == base["achievements"][0]["text"]
     assert package["provenance"]["usage"] == {"resume": {}, "cover_letter": {}}
-    files = render_package(package, tmp_path / "rendered")
-    assert {p.name for p in files} == {"package.json", "resume.md", "cover_letter.md"}
-    assert "NOT FOR SUBMISSION" in files[1].read_text()
-    storage = LocalStorage(tmp_path / "storage")
-    for file in files:
-        assert stat.S_IMODE(file.stat().st_mode) == 0o600
-        assert stat.S_IMODE(file.parent.stat().st_mode) == 0o700
-        result = storage.upload(file, f"job-id/{file.name}")
-        assert Path(result["local_path"]).read_bytes() == file.read_bytes()
-        assert stat.S_IMODE(Path(result["local_path"]).stat().st_mode) == 0o600
-    with pytest.raises(ValueError):
-        storage.upload(files[0], "../escape")
+    files = render_package(package, ROOT / "assets", job)
+    assert set(files) == {"resume.docx", "cover_letter.docx"}
+    for content in files.values():
+        assert content.startswith(b"PK")
+        assert "NOT FOR SUBMISSION" in "\n".join(p.text for p in Document(BytesIO(content)).paragraphs)
+    assert not (tmp_path / "rendered").exists()
+    requests = []
+
+    def post(self, url, **kwargs):
+        requests.append((url, kwargs))
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    storage = SupabaseStorage(SimpleNamespace(supabase_url="https://storage.example",
+                              supabase_key="test-only", supabase_bucket="private-artifacts"))
+    for name, content in files.items():
+        result = storage.upload(content, f"job-id/{name}")
+        assert result["backend"] == "supabase" and result["local_path"] is None
+        assert requests[-1][1]["content"] == content
+        assert requests[-1][1]["headers"]["Content-Type"] == DOCX_CONTENT_TYPE
+    assert len(requests) == 2
+    with pytest.raises(ValueError, match="safe Word"):
+        storage.upload(b"document", "../escape.docx")
+
+
+def test_word_preserves_fixed_sections_and_v2_layout(settings, job):
+    package = generate_package(job, settings)
+    resume = package["resume"]
+    resume["identity"].update(email="candidate@example.com", mobile="1234",
+                              location="Example City", linkedin="https://example.com/profile")
+    resume["experience"][0].update(location="Role City", summary="Fixed role summary",
+                                    platform_description="Fixed platform")
+    resume["education_records"] = [{"qualification": "Fixed qualification",
+                                    "institution": "Fixed institution", "details": "Fixed details"}]
+    resume["references"] = "Fixed references"
+    resume["career_profile"] = "Original fixed profile"
+    resume["selected_projects"] = [{"name": "Fixed project", "highlights": ["Fixed highlight"]}]
+    files = render_package(package, ROOT / "assets", job)
+    doc = Document(BytesIO(files["resume.docx"]))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    for value in ("Fixed role summary", "Fixed platform", "Role City", "Fixed institution",
+                  "Fixed references", "Original fixed profile", "Fixed highlight",
+                  resume["experience"][0]["employer"], resume["experience"][0]["dates"],
+                  resume["achievements"][0]["text"], resume["summary"]):
+        assert value in text
+    name = next(p for p in doc.paragraphs if p.text == resume["identity"]["name"])
+    assert name.runs[0].font.name == "Lato"
+    assert name.runs[0].font.size.pt == 18
+    assert str(name.runs[0].font.color.rgb) == "365F91"
+    template = Document(str(ROOT / "assets/templates/resume_template.docx"))
+    assert doc.sections[0].left_margin == template.sections[0].left_margin
+    assert doc.sections[0].page_width == template.sections[0].page_width
+    targets = [rel.target_ref for rel in doc.part.rels.values() if rel.is_external]
+    assert "mailto:candidate@example.com" in targets
+    assert "https://example.com/profile" in targets
+    letter = Document(BytesIO(files["cover_letter.docx"]))
+    letter_text = "\n".join(p.text for p in letter.paragraphs)
+    assert job["company"] in letter_text
+    assert "Dear Hiring Manager," in letter_text
+    assert all(p in letter_text for p in package["cover_letter"]["paragraphs"])
+    assert any(r.font.name == "Aptos" for p in letter.paragraphs for r in p.runs)
+
+
+def test_model_cannot_modify_fixed_fields():
+    with pytest.raises(ValidationError):
+        ResumeVariables.model_validate({"summary": "Draft", "expertise_ids": [],
+                                        "achievement_ids": [], "identity": {"name": "Invented"}})
+
+
+def test_final_storage_has_no_local_fallback():
+    with pytest.raises(ValueError, match="local output is disabled"):
+        get_storage(SimpleNamespace(storage_backend="local"))
+    with pytest.raises(ValueError, match="configured"):
+        get_storage(SimpleNamespace(storage_backend="supabase", supabase_url=None,
+                                    supabase_key=None, supabase_bucket=None))
+
+
+@pytest.mark.parametrize("public", [False, True, None])
+def test_supabase_requires_private_bucket(monkeypatch, public):
+    storage = SupabaseStorage(SimpleNamespace(supabase_url="https://storage.example",
+                              supabase_key="test-only", supabase_bucket="private-artifacts"))
+    monkeypatch.setattr(httpx.Client, "get",
+                        lambda *args, **kwargs: httpx.Response(200, json={"public": public}))
+    if public is False:
+        storage.check_bucket()
+    else:
+        with pytest.raises(ValueError, match="private"):
+            storage.check_bucket()
 
 
 def test_selection_retains_critical_and_each_role():
@@ -178,8 +256,6 @@ def test_openai_schema_limits_ids_to_current_evidence(settings, monkeypatch, kin
 def test_supabase_failure_is_sanitized_and_retry_key_stable(tmp_path, monkeypatch):
     settings = SimpleNamespace(supabase_url="https://storage.example", supabase_key="test-only",
                                supabase_bucket="private-artifacts")
-    file = tmp_path / "package.json"
-    file.write_text("{}")
     calls = []
 
     def post(self, url, **kwargs):
@@ -189,7 +265,7 @@ def test_supabase_failure_is_sanitized_and_retry_key_stable(tmp_path, monkeypatc
     monkeypatch.setattr(httpx.Client, "post", post)
     for _ in range(2):
         with pytest.raises(RuntimeError, match="HTTP 503") as error:
-            SupabaseStorage(settings).upload(file, "job-uuid/package.json")
+            SupabaseStorage(settings).upload(b"word-document", "job-uuid/resume.docx")
         assert "sensitive" not in str(error.value)
     assert calls[0][0] == calls[1][0]
     assert calls[0][1]["headers"]["x-upsert"] == "true"

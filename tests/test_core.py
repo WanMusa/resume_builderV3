@@ -1,13 +1,17 @@
 import copy
 import json
 import os
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+import httpx
+from docx import Document
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects import postgresql
@@ -19,7 +23,7 @@ from app.contracts import EnvelopeContract, JobContract
 from app.db import init_db, make_engine, make_session_factory
 from app.importer import EnvelopeValidationError, import_envelope, scan_inbox
 from app.models import Artifact, Batch, GeneratedDocument, Job, JobInput, utcnow
-from app.worker import LostLease, _fence, claim_job, process_one, retry_job
+from app.worker import LostLease, _fence, claim_job, process_one, rerender_job, retry_job
 
 
 @pytest.fixture
@@ -32,6 +36,7 @@ def database(workspace):
     settings = Settings(
         _env_file=None, database_url=os.environ.get("CORE_TEST_DATABASE_URL", f"sqlite:///{workspace / 'core.db'}"),
         database_password=os.environ.get("CORE_TEST_DATABASE_PASSWORD"),
+        supabase_bucket="test-documents",
         data_dir=workspace / "data", inbox_dir=workspace / "inbox", max_attempts=2,
     )
     engine = make_engine(settings)
@@ -78,17 +83,20 @@ def pipeline(monkeypatch):
         calls["generation"] += 1
         return copy.deepcopy(package)
 
-    def render(package, output_dir):
+    def render(package, assets_dir, job):
         calls["render"] += 1
-        path = output_dir / "resume.md"
-        path.write_text("Test resume", encoding="utf-8")
-        return [path]
+        return {"resume.docx": b"Test resume"}
 
     class Storage:
-        def upload(self, path, key):
-            calls["upload"] += 1
-            return {"backend": "local", "bucket": None, "object_key": key, "local_path": str(path)}
+        def check_bucket(self):
+            pass
 
+        def upload(self, content, key):
+            calls["upload"] += 1
+            return {"backend": "supabase", "bucket": settings_bucket,
+                    "object_key": key, "local_path": None}
+
+    settings_bucket = "test-documents"
     monkeypatch.setattr("app.generation.generate_package", generate)
     monkeypatch.setattr("app.rendering.render_package", render)
     monkeypatch.setattr("app.storage.get_storage", lambda settings: Storage())
@@ -303,7 +311,8 @@ def test_worker_success(database, payload, pipeline):
         assert session.scalar(select(GeneratedDocument)).package["resume"] == {}
         artifact = session.scalar(select(Artifact))
         assert artifact.object_key.startswith(f"{job.id}/")
-        assert artifact.local_path and Path(artifact.local_path).exists()
+        assert artifact.backend == "supabase" and artifact.local_path is None
+    assert not settings.data_dir.exists()
     assert calls == {"generation": 1, "render": 1, "upload": 1}
 
 
@@ -325,7 +334,7 @@ def test_checkpoint_survives_render_failure(database, payload, pipeline, monkeyp
     intake(factory, payload)
     from app.rendering import render_package
 
-    def fail(package, directory):
+    def fail(package, directory, job):
         # Generation must already be committed, visible from another session.
         with factory() as session:
             assert session.scalar(select(GeneratedDocument)) is not None
@@ -456,14 +465,12 @@ def test_expired_renderer_cannot_upload(database, payload, pipeline, monkeypatch
     factory, settings = database
     intake(factory, payload)
 
-    def stale_render(package, directory):
-        path = directory / "resume.md"
-        path.write_text("stale artifact")
+    def stale_render(package, directory, job):
         with factory() as session:
             session.execute(update(Job).values(lease_until=utcnow() - timedelta(seconds=1)))
             session.commit()
         assert claim_job(factory, settings) is not None
-        return [path]
+        return {"resume.docx": b"stale artifact"}
 
     monkeypatch.setattr("app.rendering.render_package", stale_render)
     assert process_one(factory, settings)
@@ -479,14 +486,17 @@ def test_stale_upload_cannot_persist_artifact_metadata(database, payload, pipeli
     successor = {}
 
     class Storage:
-        def upload(self, path, key):
+        def check_bucket(self):
+            pass
+
+        def upload(self, content, key):
             with factory() as session:
                 session.execute(update(Job).values(lease_until=utcnow() - timedelta(seconds=1)))
                 session.commit()
             successor.update(claim_job(factory, settings))
             assert key.startswith(f"{successor['id']}/")
             assert successor["token"] not in key
-            return {"backend": "local", "object_key": key, "local_path": str(path)}
+            return {"backend": "supabase", "object_key": key, "local_path": None}
 
     monkeypatch.setattr("app.storage.get_storage", lambda settings: Storage())
     assert process_one(factory, settings)
@@ -532,21 +542,23 @@ def test_upload_retry_keeps_checkpoint_and_completed_artifacts(database, payload
     intake(factory, payload)
     upload_names = []
 
-    def render(package, directory):
-        paths = [directory / "resume.md", directory / "cover_letter.md"]
-        for path in paths:
-            path.write_text("artifact")
-        return paths
+    def render(package, directory, job):
+        return {"resume.docx": b"resume", "cover_letter.docx": b"cover letter"}
 
     class Storage:
         failed = False
 
-        def upload(self, path, key):
-            upload_names.append(path.name)
-            if path.name == "cover_letter.md" and not self.failed:
+        def check_bucket(self):
+            pass
+
+        def upload(self, content, key):
+            name = key.rsplit("/", 1)[-1]
+            upload_names.append(name)
+            if name == "cover_letter.docx" and not self.failed:
                 self.failed = True
                 raise RuntimeError("storage unavailable")
-            return {"backend": "local", "object_key": key, "local_path": str(path)}
+            return {"backend": "supabase", "bucket": settings.supabase_bucket,
+                    "object_key": key, "local_path": None}
 
     storage = Storage()
     monkeypatch.setattr("app.rendering.render_package", render)
@@ -556,6 +568,132 @@ def test_upload_retry_keeps_checkpoint_and_completed_artifacts(database, payload
     process_one(factory, settings)
     assert get_job(factory).status == "completed"
     assert pipeline[0]["generation"] == 1
-    assert upload_names == ["resume.md", "cover_letter.md", "cover_letter.md"]
+    assert upload_names == ["resume.docx", "cover_letter.docx", "cover_letter.docx"]
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(Artifact)) == 2
+
+
+@pytest.mark.parametrize("status", ["completed", "needs_review", "failed"])
+def test_rerender_uses_checkpoint_without_generation(database, payload, pipeline, status):
+    factory, settings = database
+    calls, _ = pipeline
+    intake(factory, payload)
+    process_one(factory, settings)
+    job = get_job(factory)
+    with factory() as session:
+        checkpoint = session.scalar(select(GeneratedDocument))
+        checkpoint_id, original = checkpoint.id, copy.deepcopy(checkpoint.package)
+        session.execute(update(Job).values(status=status))
+        session.commit()
+        rerender_job(session, job.id)
+        session.commit()
+        assert session.scalar(select(Artifact)) is None
+    assert process_one(factory, settings)
+    assert calls["generation"] == 1
+    assert calls["render"] == 2 and calls["upload"] == 2
+    with factory() as session:
+        checkpoint = session.scalar(select(GeneratedDocument))
+        assert checkpoint.id == checkpoint_id and checkpoint.package == original
+    assert not settings.data_dir.exists()
+
+
+def test_rerender_requires_checkpoint_and_terminal_status(database, payload, pipeline):
+    factory, settings = database
+    intake(factory, payload)
+    job = get_job(factory)
+    with factory() as session:
+        with pytest.raises(ValueError, match="checkpoint"):
+            rerender_job(session, job.id)
+        with pytest.raises(LookupError):
+            rerender_job(session, "missing")
+    process_one(factory, settings)
+    with factory() as session:
+        rerender_job(session, job.id)
+        session.commit()
+        with pytest.raises(ValueError, match="terminal"):
+            rerender_job(session, job.id)
+
+
+def test_bucket_failure_prevents_generation_and_local_output(database, payload, pipeline, monkeypatch):
+    factory, settings = database
+    intake(factory, payload)
+
+    class Storage:
+        def check_bucket(self):
+            raise RuntimeError("Storage bucket check returned HTTP 403")
+
+    monkeypatch.setattr("app.storage.get_storage", lambda settings: Storage())
+    process_one(factory, settings)
+    assert pipeline[0] == {"generation": 0, "render": 0, "upload": 0}
+    assert not settings.data_dir.exists()
+    assert get_job(factory).status == "queued"
+
+
+def test_retry_upload_replaces_other_bucket_metadata(database, payload, pipeline):
+    factory, settings = database
+    intake(factory, payload)
+    job = get_job(factory)
+    with factory() as session:
+        session.add(GeneratedDocument(job_id=job.id, package=copy.deepcopy(pipeline[1])))
+        session.add(Artifact(job_id=job.id, kind="resume", filename="resume.docx",
+                             backend="supabase", bucket="old-bucket", object_key="old/resume.docx"))
+        session.commit()
+    process_one(factory, settings)
+    assert get_job(factory).status == "completed"
+    assert pipeline[0]["generation"] == 0 and pipeline[0]["upload"] == 1
+    with factory() as session:
+        artifacts = list(session.scalars(select(Artifact)))
+        assert len(artifacts) == 1
+        assert artifacts[0].bucket == settings.supabase_bucket
+        assert artifacts[0].object_key != "old/resume.docx"
+
+
+def test_checkpoint_to_word_to_supabase_without_llm_or_local_files(database, payload, monkeypatch):
+    from app.generation import generate_package
+    from app.storage import DOCX_CONTENT_TYPE
+
+    factory, settings = database
+    root = Path(__file__).resolve().parents[1]
+    settings.assets_dir = settings.data_dir.parent / "assets"
+    settings.assets_dir.mkdir()
+    shutil.copyfile(root / "assets/base_resume_example.json", settings.assets_dir / "base_resume.json")
+    shutil.copytree(root / "assets/templates", settings.assets_dir / "templates")
+    settings.prompts_dir = root / "prompts"
+    settings.supabase_url = "https://storage.example"
+    settings.supabase_key = "test-only"
+    package = generate_package(payload["jobs"][0], settings)
+    package["review_required"] = True
+    intake(factory, payload)
+    job = get_job(factory)
+    with factory() as session:
+        session.get(Job, job.id).status = "needs_review"
+        session.add(GeneratedDocument(job_id=job.id, package=package))
+        session.commit()
+        rerender_job(session, job.id)
+        session.commit()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Re-render must never invoke generation")
+
+    uploaded = {}
+
+    def upload(self, url, **kwargs):
+        assert kwargs["headers"]["Content-Type"] == DOCX_CONTENT_TYPE
+        name = url.rsplit("/", 1)[-1]
+        uploaded[name] = Document(BytesIO(kwargs["content"]))
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr("app.generation.generate_package", forbidden)
+    monkeypatch.setattr(httpx.Client, "get",
+                        lambda *args, **kwargs: httpx.Response(200, json={"public": False}))
+    monkeypatch.setattr(httpx.Client, "post", upload)
+    assert process_one(factory, settings)
+    assert get_job(factory).status == "needs_review"
+    assert set(uploaded) == {"resume.docx", "cover_letter.docx"}
+    assert not settings.data_dir.exists()
+    assert not list(settings.assets_dir.parent.glob("*.docx"))
+    with factory() as session:
+        assert session.scalar(select(GeneratedDocument)).package == package
+        artifacts = list(session.scalars(select(Artifact)))
+        assert len(artifacts) == 2
+        assert all(a.backend == "supabase" and a.local_path is None for a in artifacts)

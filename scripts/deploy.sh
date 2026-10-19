@@ -152,6 +152,7 @@ done
 failure='Runtime settings update failed; supply DATABASE_PASSWORD/API_TOKEN on first deployment and check .env permissions.'
 quiet python3 scripts/configure_runtime.py
 unset DEPLOY_DATABASE_PASSWORD DEPLOY_OPENAI_API_KEY DEPLOY_API_TOKEN
+unset DEPLOY_SUPABASE_URL DEPLOY_SUPABASE_KEY DEPLOY_SUPABASE_SECRET_KEY DEPLOY_SUPABASE_BUCKET
 
 compose=(docker compose --project-name resume_builder_v3 --project-directory "$deploy_dir"
     --env-file "$deploy_dir/.env" -f "$deploy_dir/docker-compose.yml")

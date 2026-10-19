@@ -1,7 +1,7 @@
 # resume_builderV3
 
-JSON inbox → PostgreSQL queue → Python generation → deterministic JSON/Markdown
-rendering → private Supabase Storage (or local development storage).
+JSON inbox → PostgreSQL queue → variable-only LLM generation → Python-rendered
+Word documents using V2 templates → private Supabase Storage.
 
 FastAPI, importer, and worker share one codebase. **No scraping, CSV ingestion,
 Hermes, OpenClaw, LangGraph, Redis, or provider memory.** The Chrome extension owns
@@ -15,13 +15,13 @@ capture. Prompts and authoritative career evidence are version-controlled files.
   bounded attempts, durable generated JSON, resumable rendering/upload.
 - Mock provider (default, no external services), OpenAI-compatible structured JSON
   provider, evidence selection, immutable fixed sections, usage/config hashes.
-- JSON and readable Markdown artifacts; local storage and real Supabase REST
-  storage adapter. Supabase is **not** the workflow database.
+- Generated JSON checkpoint in PostgreSQL; resume and cover-letter DOCX artifacts
+  rendered entirely in memory and uploaded to private Supabase Storage.
+  There is no local final-output fallback. Supabase is **not** the workflow database.
 - Authenticated operator endpoints and non-root Docker services.
-- **Not implemented:** DOCX/PDF templates, browser UI, signed download URLs,
+- **Not implemented:** PDF export, browser UI, signed download URLs,
   approval/regeneration UI, CSV processing, cost dashboard, automatic migrations
-  for future schema revisions. The renderer is a small replaceable module, not
-  fake DOCX support. Back up PostgreSQL and artifact storage before upgrades.
+  for future schema revisions. Back up PostgreSQL and artifact storage before upgrades.
 
 The committed career data is **fictional example evidence**, not a real resume.
 Mock artifacts are visibly marked NOT FOR SUBMISSION. Replace the example with
@@ -157,11 +157,17 @@ Add these runtime secrets in the repository's Actions settings:
 | `API_TOKEN` | Bearer token accepted by the inbox API |
 | `OPENAI_API_KEY` | Runtime generation key, only needed when using `PROVIDER=openai` |
 | `DB_USER` | Optional existing PostgreSQL admin login used for local provisioning; defaults to the container's `POSTGRES_USER` |
+| `SUPABASE_URL` | HTTPS URL of the output storage project |
+| `SUPABASE_KEY` | Server-only credential with bucket metadata and upload/upsert permission |
+| `SUPABASE_SECRET_KEY` | V2-compatible alternative to `SUPABASE_KEY`; `SUPABASE_KEY` takes precedence |
+| `SUPABASE_BUCKET` | Optional bucket override; new deployments default to `generated-documents` |
 
 Secrets travel in the encrypted SSH input stream, not command arguments or logs.
 Deployment creates `.env` from `.env.example` if missing, then atomically merges
 nonempty runtime secrets with mode `0600`. Existing non-secret settings and omitted
-secrets are retained. First deployment requires `DATABASE_PASSWORD` and `API_TOKEN`.
+secrets are retained. Deployment explicitly upgrades `STORAGE_BACKEND` to `supabase`;
+old `local` settings are not retained. First deployment requires `DATABASE_PASSWORD`
+and `API_TOKEN`, and preflight requires valid Supabase settings and a private bucket.
 `DB_USER` is not the application's login and is not written into its runtime file.
 The existing PostgreSQL container must allow its admin login over the local Unix
 socket; no database admin password is sent to the app. A supplied database password
@@ -220,9 +226,9 @@ The generated `.env` defaults to the dedicated app `DATABASE_URL` and
 Automatic provisioning supports only `resume_builder@postgres:5432/resume_builder`,
 not arbitrary admin/application URLs. Keep container paths
 `DATA_DIR=/app/data`, `INBOX_DIR=/app/inbox/json`, `ASSETS_DIR=/app/assets`,
-`PROMPTS_DIR=/app/prompts`. Configure Supabase credentials/bucket only if using
-that backend; preflight validates required settings but does not upload a test
-object. `PROVIDER=mock` remains mock unless **you** change the runtime file.
+`PROMPTS_DIR=/app/prompts`. Supabase credentials and an existing private bucket are
+required. Preflight checks bucket metadata and rejects public buckets; it does not
+upload a test object. `PROVIDER=mock` remains mock unless **you** change the runtime file.
 Deployment does not require an OpenAI key or non-example evidence to start.
 Those checks happen only when a live generation job actually runs. Live generation
 still requires your real, validated non-example career evidence and a runtime key;
@@ -422,9 +428,28 @@ curl -fsS -X POST -H "Authorization: Bearer"" $API_TOKEN" \
 HTTP 422 returns useful validation errors. Accepted/partial imports return HTTP
 201. `GET /batches`, `/batches/{id}`, `/jobs`, `/jobs/{id}` expose statuses and
 results. Lists accept `limit` (1–200) and `offset`; jobs also accept `status`.
-Job details include generated content and local paths or Supabase object keys,
+Job details include generated content and Supabase bucket/object keys
+(legacy local artifacts may still have local paths),
 not public URLs. Health checks database connectivity without exposing credentials.
-Do not serve Markdown as trusted HTML without sanitization.
+New outputs are Word documents, not Markdown.
+
+### Re-render an existing checkpoint without LLM calls
+
+After upgrading from Markdown/local output, use the authenticated
+`POST /jobs/JOB_UUID/rerender` endpoint (public prefix: `/resume`). It accepts
+`completed`, `needs_review`, or `failed` jobs only when a generated JSON checkpoint
+exists. It queues Word rendering and Supabase upload, clears superseded artifact
+metadata, and preserves the exact generated database checkpoint. It never
+regenerates prose. A second request while queued/processing returns HTTP 409.
+
+```bash
+curl -fsS -X POST -H "Authorization: Bearer $TOKEN" \
+  https://wanagents.duckdns.org/resume/jobs/JOB_UUID/rerender
+```
+
+Old local files are not deleted automatically. No new local document or JSON
+output files are written. Missing templates or Supabase configuration fail
+explicitly rather than falling back to Markdown or local storage.
 
 ### State and retries
 
@@ -495,19 +520,22 @@ strict JSON-schema responses. Replace **all** example facts, validate IDs, and s
 
 ## Storage
 
-`STORAGE_BACKEND=local` writes under `DATA_DIR/storage`; rendered originals remain
-under `DATA_DIR`. `STORAGE_BACKEND=supabase` requires an existing **private** bucket,
+`STORAGE_BACKEND=supabase` is the only supported final-output backend and requires an existing **private** bucket,
 `SUPABASE_URL` (HTTPS), `SUPABASE_BUCKET`, and a server-only `SUPABASE_KEY` with
 upload/upsert permission. A service-role key is powerful: keep it only on the
 server, never in the extension. Prefer a scoped server credential where supported.
 No bucket is created and no object is made public. Store durable bucket/object
 keys; a future authenticated download route can issue short-lived signed URLs.
 Supabase calls have timeouts and persist sanitized HTTP errors, not response bodies.
-Readable resume artifacts intentionally contain personal data. Local files are
-owner-only (0600) in private artifact directories (0700), but **are not encrypted
-by this application**. Use an encrypted VPS disk/volume and encrypted backups
-where required; protect inbox archives and PostgreSQL backups too. The local
-fallback is not a public file server or a secrets store.
+The worker checks the private bucket before any generation call. Python renders
+`resume.docx` and `cover_letter.docx` using the unchanged V2 templates under
+`assets/templates/`, retaining their page setup and applying V2 Lato/blue resume
+and Aptos cover-letter formatting. Fixed identity, roles, education,
+certifications, references, and additional fixed sections come from the saved
+package, never model-editable formatting fields. The JSON package remains in
+PostgreSQL; it is not duplicated as an output artifact. Documents are uploaded
+from memory with the Word MIME type; `local_path` is null for new artifacts.
+Protect Supabase objects, inbox archives, and PostgreSQL backups as personal data.
 
 ## Environment reference
 
@@ -519,9 +547,9 @@ fallback is not a public file server or a secrets store.
 | `ALLOW_UNAUTHENTICATED` | `false`; never enable on exposed deployments |
 | `PROVIDER` | `mock` or `openai` |
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` | Live provider credentials, trusted URL, model |
-| `STORAGE_BACKEND` | `local` or `supabase` |
+| `STORAGE_BACKEND` | `supabase` only; no local fallback |
 | `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_BUCKET` | Private storage configuration |
-| `DATA_DIR`, `INBOX_DIR` | Writable output and JSON intake paths |
+| `DATA_DIR`, `INBOX_DIR` | Legacy runtime directory and JSON intake path; documents are not written here |
 | `ASSETS_DIR`, `PROMPTS_DIR` | Read-only versioned content directories |
 | `POLL_SECONDS` | `5`; idle importer/worker polling interval |
 | `LEASE_SECONDS` | `600`; execution lease duration |
@@ -530,7 +558,7 @@ fallback is not a public file server or a secrets store.
 ## VPS deployment
 
 1. Provision the dedicated app database/role in existing infra, confirm external
-   network `ai_platform` exists, and create the private Supabase bucket if needed.
+   network `ai_platform` exists, and create the private Supabase output bucket.
 2. Check out this repository on the VPS (for example `/opt/resume_builderV3`).
    Create `.env` from `.env.example`, set real app credentials and a strong API
    token, and keep the default `/app/...` paths for containers.
@@ -549,7 +577,7 @@ fallback is not a public file server or a secrets store.
    ```
 
 4. Confirm `/health`, import the example, inspect jobs/artifacts with mock mode,
-   then configure actual evidence/provider/storage and test a reviewed real job.
+   then configure actual evidence/provider and test a reviewed real job.
 5. API stays bound to VPS loopback port 8000 and registers only `/resume/` with
   the existing shared HTTPS reverse proxy (see the shared-host instructions
   above). Keep bearer authentication enabled, verify TLS and the 401 check,
@@ -559,5 +587,5 @@ fallback is not a public file server or a secrets store.
 Containers use a read-only root filesystem, dropped capabilities, no-new-privileges,
 and read-only prompt/asset mounts. Never commit `.env`, inbox archives, database
 dumps, or generated documents. Back up PostgreSQL, retained input, and output
-volumes; configure retention and disk monitoring. Default mock/local mode is for
+storage; configure retention and disk monitoring. Default mock generation is for
 safe end-to-end verification, not automatic submission of job applications.

@@ -1,7 +1,7 @@
 from datetime import timedelta
 from pathlib import Path
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, delete, or_, select, update
 
 from app.models import Artifact, GeneratedDocument, Job, new_id, utcnow
 
@@ -75,6 +75,25 @@ def retry_job(session, job_id: str) -> Job:
     return job
 
 
+def rerender_job(session, job_id: str) -> Job:
+    """Queue rendering from a saved package, never a new generation."""
+    job = session.get(Job, job_id)
+    if job is None:
+        raise LookupError("Job not found")
+    checkpoint = session.scalar(select(GeneratedDocument).where(GeneratedDocument.job_id == job_id))
+    if checkpoint is None:
+        raise ValueError("Re-render requires an existing generated checkpoint")
+    result = session.execute(update(Job).where(
+        Job.id == job_id, Job.status.in_(("failed", "completed", "needs_review")),
+    ).values(status="queued", attempts=0, error=None, lease_until=None,
+             lease_token=None, completed_at=None))
+    if result.rowcount != 1:
+        raise ValueError("Only terminal jobs can be re-rendered")
+    session.execute(delete(Artifact).where(Artifact.job_id == job_id))
+    session.refresh(job)
+    return job
+
+
 def process_one(session_factory, settings) -> bool:
     # Lazy imports allow intake and API use without renderer/provider initialization.
     from app.generation import EvidenceValidationError, generate_package
@@ -86,6 +105,8 @@ def process_one(session_factory, settings) -> bool:
         return False
     job_id, token = claimed["id"], claimed["token"]
     try:
+        storage = get_storage(settings)
+        storage.check_bucket()
         with session_factory() as session:
             document = session.scalar(select(GeneratedDocument).where(GeneratedDocument.job_id == job_id))
             package = document.package if document else None
@@ -98,35 +119,39 @@ def process_one(session_factory, settings) -> bool:
                 session.add(GeneratedDocument(job_id=job_id, package=package))
                 session.commit()
 
-        # Lease-specific paths prevent an expired renderer overwriting its successor.
-        output_dir = Path(settings.data_dir) / job_id / token
-        output_dir.mkdir(parents=True, exist_ok=True)
         with session_factory() as session:
             _fence(session, job_id, token, settings)
             session.commit()
-        paths = render_package(package, output_dir)
-        if not paths:
+        documents = render_package(package, settings.assets_dir, claimed["payload"])
+        if not documents:
             raise ValueError("Renderer produced no artifacts")
         with session_factory() as session:
             _fence(session, job_id, token, settings, status="rendered")
-            existing = {artifact.filename for artifact in session.scalars(select(Artifact).where(Artifact.job_id == job_id))}
+            existing = {artifact.filename for artifact in session.scalars(select(Artifact).where(
+                Artifact.job_id == job_id, Artifact.backend == "supabase",
+                Artifact.bucket == settings.supabase_bucket,
+            ))}
             session.commit()
-        storage = get_storage(settings)
-        for raw_path in paths:
-            path = Path(raw_path)
-            if path.name in existing:
+        for filename, content in documents.items():
+            if filename in existing:
                 continue
             with session_factory() as session:
                 _fence(session, job_id, token, settings)
                 session.commit()
-            metadata = storage.upload(path, f"{job_id}/{token}/{path.name}")
+            metadata = storage.upload(content, f"{job_id}/{token}/{filename}")
             with session_factory() as session:
                 _fence(session, job_id, token, settings)
-                session.add(Artifact(
-                    job_id=job_id, kind=path.stem, filename=path.name,
-                    backend=metadata["backend"], bucket=metadata.get("bucket"),
-                    object_key=metadata["object_key"], local_path=metadata.get("local_path"),
+                artifact = session.scalar(select(Artifact).where(
+                    Artifact.job_id == job_id, Artifact.filename == filename,
                 ))
+                if artifact is None:
+                    artifact = Artifact(job_id=job_id, filename=filename)
+                    session.add(artifact)
+                artifact.kind = Path(filename).stem
+                artifact.backend = metadata["backend"]
+                artifact.bucket = metadata.get("bucket")
+                artifact.object_key = metadata["object_key"]
+                artifact.local_path = metadata.get("local_path")
                 session.commit()
         with session_factory() as session:
             _fence(session, job_id, token, settings, status="uploaded")

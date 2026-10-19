@@ -13,6 +13,7 @@ from app.config import Settings
 from app.db import make_engine
 from app.generation import validate_base
 from app.models import Base
+from app.storage import get_storage
 
 
 def check_configuration(settings: Settings) -> None:
@@ -23,10 +24,7 @@ def check_configuration(settings: Settings) -> None:
         raise ValueError("Production requires a dedicated PostgreSQL role and database")
     if not settings.database_password and not url.password:
         raise ValueError("Set the dedicated DATABASE_PASSWORD")
-    if settings.storage_backend == "supabase" and not all(
-        (settings.supabase_url, settings.supabase_key, settings.supabase_bucket)
-    ):
-        raise ValueError("Configure Supabase storage credentials and bucket")
+    get_storage(settings)
     for name, expected in (("data_dir", "/app/data"), ("inbox_dir", "/app/inbox/json"),
                            ("assets_dir", "/app/assets"), ("prompts_dir", "/app/prompts")):
         if getattr(settings, name) != Path(expected):
@@ -34,6 +32,10 @@ def check_configuration(settings: Settings) -> None:
 
 
 def check_files(settings: Settings) -> None:
+    from docx import Document
+
+    for name in ("resume", "cover_letter"):
+        Document(str(settings.assets_dir / "templates" / f"{name}_template.docx"))
     base = json.loads((settings.assets_dir / "base_resume.json").read_text())
     validate_base(base)
     for kind in ("resume", "cover_letter"):
@@ -98,6 +100,7 @@ def main() -> int:
         check_configuration(settings)
         check_files(settings)
         check_database(settings, ready=sys.argv[1:] == ["--ready"])
+        get_storage(settings).check_bucket()
     except Exception:
         # Validation/driver exceptions can include env values or connection URLs.
         print("Deployment check failed; privately verify configuration, files and dedicated database permissions.", file=sys.stderr)

@@ -280,12 +280,14 @@ def test_service_health_requires_all_running_without_restarts(server, state):
 
 def test_configuration_production_guards():
     settings = Settings(_env_file=None, api_token="fixture-token", database_password="fixture-password",
+                        supabase_url="https://storage.example", supabase_key="fixture-key",
+                        supabase_bucket="generated-documents",
                         data_dir="/app/data", inbox_dir="/app/inbox/json",
                         assets_dir="/app/assets", prompts_dir="/app/prompts")
     deployment.check_configuration(settings)
     for changes in ({"api_token": None}, {"allow_unauthenticated": True},
                     {"database_url": "sqlite://"}, {"database_password": None},
-                    {"storage_backend": "supabase"},
+                    {"storage_backend": "local"}, {"supabase_key": None},
                     {"data_dir": Path("/tmp/unpersisted")}):
         with pytest.raises(ValueError):
             deployment.check_configuration(settings.model_copy(update=changes))
@@ -306,6 +308,7 @@ def test_files_checked_without_generation(tmp_path):
     assets = tmp_path / "assets"
     assets.mkdir()
     shutil.copyfile(ROOT / "assets/base_resume_example.json", assets / "base_resume.json")
+    shutil.copytree(ROOT / "assets/templates", assets / "templates")
     settings = Settings(_env_file=None, assets_dir=assets, prompts_dir=ROOT / "prompts",
                         data_dir=tmp_path / "data", inbox_dir=tmp_path / "inbox/json")
     settings.data_dir.mkdir()
@@ -320,6 +323,7 @@ def test_runtime_files_need_read_not_write_access(tmp_path, monkeypatch):
     assets = tmp_path / "assets"
     assets.mkdir()
     shutil.copyfile(ROOT / "assets/base_resume_example.json", assets / "base_resume.json")
+    shutil.copytree(ROOT / "assets/templates", assets / "templates")
     settings = Settings(_env_file=None, assets_dir=assets, prompts_dir=ROOT / "prompts",
                         data_dir=tmp_path / "data", inbox_dir=tmp_path / "inbox/json")
     settings.data_dir.mkdir()
@@ -427,6 +431,26 @@ def test_runtime_secret_invalid_input_does_not_overwrite(tmp_path):
     with pytest.raises(ValueError):
         runtime.configure(tmp_path, {"DEPLOY_API_TOKEN": "first\nSECOND=value"})
     assert target.read_text() == "API_TOKEN=original\n"
+
+
+def test_runtime_supabase_upgrade_and_v2_secret_alias(tmp_path):
+    target = tmp_path / ".env"
+    target.write_text("STORAGE_BACKEND=local\nPROVIDER=openai\nSUPABASE_BUCKET=private-docs\n")
+    runtime_module().configure(tmp_path, {
+        "DEPLOY_SUPABASE_URL": "https://storage.example",
+        "DEPLOY_SUPABASE_SECRET_KEY": "v2-server-credential",
+    })
+    settings = Settings(_env_file=target)
+    assert settings.storage_backend == "supabase"
+    assert settings.supabase_url == "https://storage.example"
+    assert settings.supabase_key == "v2-server-credential"
+    assert settings.supabase_bucket == "private-docs"
+    runtime_module().configure(tmp_path, {"DEPLOY_SUPABASE_SECRET_KEY": "alias",
+                                        "DEPLOY_SUPABASE_KEY": "preferred",
+                                        "DEPLOY_SUPABASE_BUCKET": "new-private-docs"})
+    settings = Settings(_env_file=target)
+    assert settings.supabase_key == "preferred"
+    assert settings.supabase_bucket == "new-private-docs"
 
 
 @pytest.mark.parametrize("password", [

@@ -13,7 +13,7 @@ from app.config import Settings
 from app.db import make_engine, make_session_factory
 from app.importer import EnvelopeValidationError, import_envelope
 from app.models import Batch, Job
-from app.worker import retry_job
+from app.worker import rerender_job, retry_job
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 
@@ -133,6 +133,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def retry(job_id: str, db=Depends(session)):
         try:
             job = retry_job(db, job_id)
+        except LookupError:
+            raise HTTPException(404, "Job not found") from None
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        db.commit()
+        return job_view(job)
+
+    @router.post("/jobs/{job_id}/rerender", status_code=202)
+    def rerender(job_id: str, db=Depends(session)):
+        try:
+            job = rerender_job(db, job_id)
         except LookupError:
             raise HTTPException(404, "Job not found") from None
         except ValueError as exc:

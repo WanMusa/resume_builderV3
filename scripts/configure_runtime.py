@@ -7,7 +7,8 @@ import tempfile
 from pathlib import Path
 
 
-SECRET_KEYS = ("DATABASE_PASSWORD", "OPENAI_API_KEY", "API_TOKEN")
+SECRET_KEYS = ("DATABASE_PASSWORD", "OPENAI_API_KEY", "API_TOKEN",
+               "SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_BUCKET")
 
 
 def configure(directory: Path, environment: dict[str, str]) -> None:
@@ -20,6 +21,9 @@ def configure(directory: Path, environment: dict[str, str]) -> None:
     content = (target if target.exists() else directory / ".env.example").read_text()
     updates = {key: environment[f"DEPLOY_{key}"] for key in SECRET_KEYS
                if environment.get(f"DEPLOY_{key}")}
+    if environment.get("DEPLOY_SUPABASE_SECRET_KEY") and "SUPABASE_KEY" not in updates:
+        updates["SUPABASE_KEY"] = environment["DEPLOY_SUPABASE_SECRET_KEY"]
+    updates["STORAGE_BACKEND"] = "supabase"
     for key, value in updates.items():
         if any(character in value for character in ("\n", "\r", "\0")):
             raise ValueError(f"{key} must be a single-line value")
