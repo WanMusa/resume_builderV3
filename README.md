@@ -480,12 +480,11 @@ additional provider charges up to `MAX_ATTEMPTS`.
 
 Normal flow: `queued → generating → rendered → uploaded → completed`.
 Live generated drafts finish as `needs_review` rather than claiming semantic
-fact verification. Fixed headers remain deterministic; all rewritten claims,
-including expertise, summaries, achievements and letters, need factual review.
+fact verification. Identity and professional experience are fixed; generated
+profiles, competencies, key achievements and cover letters still need factual review.
 
 Failed jobs report fixed evidence-validation reasons for unknown evidence IDs,
-repeated achievement IDs, omitted critical achievements, incomplete role coverage,
-or exceeded word budgets. Other exception
+repeated achievement IDs, omitted critical achievements, or exceeded word budgets. Other exception
 details remain redacted to avoid exposing private input or provider responses.
 An existing failed job retains its old error until retried; retrying live
 generation can make additional paid provider calls.
@@ -511,38 +510,47 @@ paid generation; `/retry` is for recovering the current work.
 
 Edit `assets/base_resume.json` and the four files under `prompts/`.
 Stable evidence IDs link achievements to code-controlled roles, dates, employers,
-education, certifications, and identity. Following V2, the model writes only
-the variable prose: short role-positioning labels, career profile, expertise
-area/description pairs, and a tailored summary plus highlight/detail achievement
-bullets for each role. Fixed role headers, chronology and qualifications remain
-Python-controlled. Supporting details, the original profile, role descriptions
-and projects are context for rewriting, not a visible source-text appendix.
+education, certifications, and identity. The model writes only the career profile,
+competency area/description pairs, and selected key-achievement bullets. The
+professional experience summaries and highlights are fixed in the base resume;
+Python prints them as supplied. Fixed role headers, chronology and qualifications
+also remain Python-controlled. Supporting details and platform descriptions can
+inform generated competencies and highlights without being copied as a source dump.
+The optional fixed `fixed.selected_projects` list is rendered under
+`AGENTIC AI & AUTOMATION SOLUTIONS` between core competencies and professional experience.
+It supports a section introduction (`selected_projects_intro`), a portfolio URL
+(`selected_projects_url`), and project entries with `name`, `description`, and
+optional `highlights`; these fields are printed as supplied, not LLM-rewritten.
 The complete original resume is preserved as `source_resume` in the checkpoint;
 the base file is never modified during generation.
+Newly generated checkpoints use package format 3. The renderer continues to
+support V2 checkpoints so saved jobs can still be rerendered without generation.
 
-Expertise and achievements carry internal evidence citations. These IDs are
-validated but never printed in either Word document. Each OpenAI request
-constrains citation IDs and role IDs to current-source enums. Python additionally
-rejects unknown/cross-role achievement citations, repeated achievements, omitted
-critical evidence, missing/duplicated roles and invalid JSON. Returned roles are
-reassembled in source order. Empty source expertise allows only an empty list.
+Competencies and key achievements carry internal evidence citations. These IDs are
+validated but never printed in either Word document. Each OpenAI request constrains
+citation IDs to current-source enums. Python additionally rejects unknown evidence
+citations, repeated achievements, omitted critical evidence and invalid JSON.
+Fixed experience remains in source order and is never model-editable. Empty source
+expertise allows only an empty list.
 Semantic correctness of arbitrary prose is **not** guaranteed by JSON
 validation; all live drafts require review.
 
 The target is about **2-3 pages**, not a guaranteed layout-engine page count.
-Hard limits: profile 90 words; up to 8 expertise items, each 20 words including
-its label; each role summary 60 words; up to 3 achievement bullets per role,
-each 35 words including its highlight; all generated resume text at most
-900 words. The prompt targets 650-800 words for four roles, rather than filling
-every maximum. Cover letters are capped at 350 words. Actual pagination depends
-on fixed sections, fonts and Word's layout engine; inspect the final document.
+Hard limits: profile 140 words; up to 14 competency items, each 26 words including
+its label; up to 10 key achievements, each 36 words; all generated resume text at
+most 800 words. The prompt targets approximately 600-750 generated words rather
+than filling every maximum. Cover letters are capped at 350 words. Actual
+pagination depends on fixed sections, fonts and Word's layout engine; inspect the
+final document.
 
-Requests include full career background, achievements and supporting details
-without keyword-based preselection or truncation. They omit contact details,
-fixed qualifications, capture metadata, duplicate extracted requirements and prior
-jobs. A larger input is intentional factual context, not a requirement to print
-more text. Resume and letter use separate bounded requests with independent
-instructions and the same authoritative evidence, not generated claims as facts.
+Resume requests include the job advert, concise role metadata, and source
+achievement/expertise evidence. They omit fixed role prose, platform descriptions,
+AI project descriptions, contact details and qualifications, reducing input tokens
+while preserving the facts needed for tailoring. Reasonable capability-level
+inference is permitted only when supported by multiple concrete source facts;
+the model must not invent hands-on tool use, mastery, years or outcomes. Resume
+and letter use separate bounded requests with independent instructions and the
+same authoritative evidence, not generated claims as facts.
 The combined validated package is the generation checkpoint; if the second call
 fails before that checkpoint, retry repeats both calls. Per-call checkpoints and
 combined-call benchmarking can be added later if measured cost warrants it.

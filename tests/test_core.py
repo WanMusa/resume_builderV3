@@ -368,7 +368,7 @@ def test_worker_error_does_not_persist_exception_response(database, payload, pip
 
 
 @pytest.mark.parametrize("reason", ["unknown_evidence", "repeated_achievements", "missing_critical",
-                                  "role_coverage", "content_length"])
+                                  "content_length"])
 def test_worker_reports_safe_evidence_validation(database, payload, pipeline, monkeypatch, reason):
     from app.generation import EvidenceValidationError
 

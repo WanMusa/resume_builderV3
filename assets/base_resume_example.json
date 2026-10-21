@@ -1,9 +1,11 @@
 {
   "is_example": true,
   "fixed": {
-    "identity": {"name": "Example Candidate", "contact": "Replace with your professional contact details"},
+    "identity": {"name": "Example Candidate", "contact": "Replace with your professional contact details", "website": "https://example.test"},
     "experience": [
-      {"id": "role-1", "employer": "Map Of Ag", "title": "Business Analyst", "dates": "2022–2025"}
+      {"id": "role-1", "employer": "Map Of Ag", "title": "Business Analyst", "dates": "2022–2025",
+       "summary": "Delivered agricultural data and reporting improvements with business and engineering teams.",
+       "highlights": ["Documented requirements and validated reporting data with SQL."]}
     ],
     "education": ["Example qualification — replace before live generation"],
     "certifications": []

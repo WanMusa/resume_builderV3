@@ -13,12 +13,11 @@ class EvidenceValidationError(ValueError):
         "unknown_evidence": "Provider referenced unknown or unselected evidence",
         "repeated_achievements": "Provider repeated achievement IDs",
         "missing_critical": "Provider omitted critical achievements",
-        "role_coverage": "Provider must cover every source role exactly once",
         "content_length": "Provider exceeded the concise resume or cover-letter word budget",
     }
 
     def __init__(self, reason: Literal["unknown_evidence", "repeated_achievements", "missing_critical",
-                                     "role_coverage", "content_length"]):
+                                     "content_length"]):
         self.reason = reason
         super().__init__(self.MESSAGES[reason])
 
@@ -29,6 +28,7 @@ class StrictOutput(BaseModel):
 
 Text = Annotated[str, Field(min_length=1, max_length=1800)]
 EvidenceIDs = Annotated[list[str], Field(min_length=1, max_length=32)]
+AchievementEvidenceIDs = Annotated[list[str], Field(min_length=1, max_length=64)]
 
 
 class Expertise(StrictOutput):
@@ -40,21 +40,13 @@ class Expertise(StrictOutput):
 class Achievement(StrictOutput):
     highlight: Annotated[str, Field(min_length=1, max_length=160)]
     detail: Annotated[str, Field(min_length=1, max_length=600)]
-    evidence_ids: EvidenceIDs
-
-
-class Experience(StrictOutput):
-    experience_id: str
-    tailored_summary: Text
-    tailored_achievements: Annotated[list[Achievement], Field(max_length=3)]
+    evidence_ids: AchievementEvidenceIDs
 
 
 class ResumeVariables(StrictOutput):
-    target_role_tags: Annotated[list[Annotated[str, Field(min_length=1, max_length=60)]],
-                                Field(min_length=1, max_length=3)]
     career_profile: Text
-    areas_of_expertise: Annotated[list[Expertise], Field(max_length=8)]
-    professional_experience: Annotated[list[Experience], Field(min_length=1)]
+    areas_of_expertise: Annotated[list[Expertise], Field(max_length=14)]
+    key_achievements: Annotated[list[Achievement], Field(max_length=10)]
 
 
 class Letter(StrictOutput):
@@ -72,8 +64,12 @@ def validate_base(base: dict) -> None:
         raise ValueError("Base resume requires a candidate name")
     for role in fixed["experience"]:
         if not all(isinstance(role.get(k), str) and role[k].strip()
-                   for k in ("id", "employer", "title", "dates")):
-            raise ValueError("Base experience requires id, employer, title and dates")
+                   for k in ("id", "employer", "title", "dates", "summary")):
+            raise ValueError("Base experience requires id, employer, title, dates and summary")
+        highlights = role.get("highlights", [])
+        if not isinstance(highlights, list) or any(
+                not isinstance(item, str) or not item.strip() for item in highlights):
+            raise ValueError("Base experience highlights must be a list of nonempty strings")
     for group in (fixed["experience"], base["achievements"], base["expertise"]):
         ids = [r["id"] for r in group]
         if not all(isinstance(i, str) and i.strip() for i in ids) or len(set(ids)) != len(ids):
@@ -101,16 +97,17 @@ def digest(value: object) -> str:
 
 
 def prepare(job: dict, settings) -> tuple[dict, dict, dict]:
-    base = json.loads((settings.assets_dir / "base_resume.json").read_text())
+    base = json.loads((settings.assets_dir / "base_resume.json").read_text(encoding="utf-8"))
     validate_base(base)
-    # Supporting material informs wording; it is never automatically printed.
+    # Only concise role metadata and source evidence are sent for tailoring.
     context = {"job": {k: job.get(k) for k in
                       ("title", "company", "location", "description_text")},
-               "background": {k: v for k, v in base["fixed"].items()
-                              if k not in ("identity", "education", "education_records",
-                                           "certifications", "references")},
+               "background": {"experience": [
+                   {key: role[key] for key in ("id", "employer", "title", "dates")}
+                   for role in base["fixed"]["experience"]
+               ]},
                "evidence": {k: base[k] for k in ("achievements", "expertise")}}
-    prompts = {p.stem: p.read_text() for p in settings.prompts_dir.glob("*.txt")}
+    prompts = {p.stem: p.read_text(encoding="utf-8") for p in settings.prompts_dir.glob("*.txt")}
     return base, context, prompts
 
 
@@ -120,28 +117,26 @@ class MockProvider:
     def generate(self, kind: str, context: dict, prompts: dict, schema: type[BaseModel]):
         evidence = context["evidence"]
         if kind == "resume":
+            achievements = sorted(
+                evidence["achievements"],
+                key=lambda record: not record.get("critical", False),
+            )[:10]
             result = {
-                "target_role_tags": ["Development preview"],
                 "career_profile": "Development preview, not an application-ready resume.",
                 "areas_of_expertise": [
                     {"area": " ".join(r["text"].split()[:3]),
                      "description": " ".join(r["text"].split()[:17]), "evidence_ids": [r["id"]]}
-                    for r in evidence["expertise"][:8]
+                    for r in evidence["expertise"][:14]
                 ],
-                "professional_experience": [],
+                "key_achievements": [],
             }
-            for role in context["background"]["experience"]:
-                records = [r for r in evidence["achievements"] if r["experience_id"] == role["id"]]
-                records = sorted(records, key=lambda r: not r.get("critical", False))[:96]
-                result["professional_experience"].append({
-                    "experience_id": role["id"],
-                    "tailored_summary": "Development preview of this role's documented experience.",
-                    "tailored_achievements": [
-                        {"highlight": "Documented contribution.",
-                         "detail": " ".join(records[start]["text"].split()[:30]),
-                         "evidence_ids": [r["id"] for r in records[start:start + 32]]}
-                        for start in range(0, len(records), 32)
-                    ],
+            for record in achievements:
+                words = record["text"].split()
+                split = max(1, min(6, len(words) - 1))
+                result["key_achievements"].append({
+                    "highlight": " ".join(words[:split]),
+                    "detail": " ".join(words[split:split + 28]) or "Documented contribution.",
+                    "evidence_ids": [record["id"]],
                 })
         else:
             result = {"paragraphs": [
@@ -171,9 +166,6 @@ class OpenAIProvider:
                 definitions["Expertise"]["properties"]["evidence_ids"]["items"]["enum"] = expertise_ids
             else:
                 output_schema["properties"]["areas_of_expertise"]["maxItems"] = 0
-            definitions["Experience"]["properties"]["experience_id"]["enum"] = [
-                r["id"] for r in context["background"]["experience"]
-            ]
         else:
             output_schema["properties"]["evidence_ids"]["items"]["enum"] = achievement_ids
         # No tools, URL fetching, conversation history, or automatic paid retries.
@@ -190,7 +182,7 @@ class OpenAIProvider:
                     ],
                     "response_format": {"type": "json_schema", "json_schema": {
                         "name": kind, "strict": True, "schema": output_schema}},
-                    "max_completion_tokens": 5000 if kind == "resume" else 1800,
+                    "max_completion_tokens": 3500 if kind == "resume" else 1800,
                 })
         if not response.is_success:
             # Never persist provider bodies: they may echo credentials or private input.
@@ -216,18 +208,11 @@ def generate_package(job_payload: dict, settings) -> dict:
     provider = get_provider(settings)
     resume, resume_usage = provider.generate("resume", context, prompts, ResumeVariables)
     letter, letter_usage = provider.generate("cover_letter", context, prompts, Letter)
-    role_ids = [r["id"] for r in base["fixed"]["experience"]]
-    returned_roles = [r.experience_id for r in resume.professional_experience]
-    if len(returned_roles) != len(role_ids) or set(returned_roles) != set(role_ids):
-        raise EvidenceValidationError("role_coverage")
-    selected = []
-    for role in resume.professional_experience:
-        for achievement in role.tailored_achievements:
-            if any(i not in achievements or achievements[i]["experience_id"] != role.experience_id
-                   for i in achievement.evidence_ids):
-                raise EvidenceValidationError("unknown_evidence")
-            selected.extend(achievement.evidence_ids)
-    if (any(not set(item.evidence_ids) <= expertise.keys() for item in resume.areas_of_expertise)
+    selected = [evidence_id for item in resume.key_achievements for evidence_id in item.evidence_ids]
+    selected_expertise = [evidence_id for item in resume.areas_of_expertise
+                          for evidence_id in item.evidence_ids]
+    if (not set(selected) <= achievements.keys()
+            or not set(selected_expertise) <= expertise.keys()
             or not set(letter.evidence_ids) <= achievements.keys()):
         raise EvidenceValidationError("unknown_evidence")
     if len(set(selected)) != len(selected):
@@ -235,25 +220,18 @@ def generate_package(job_payload: dict, settings) -> dict:
     critical = {r["id"] for r in evidence["achievements"] if r.get("critical")}
     if not critical <= set(selected):
         raise EvidenceValidationError("missing_critical")
-    budgets = [(resume.career_profile, 90)]
-    budgets += [(" ".join(resume.target_role_tags), 18)]
-    budgets += [(f"{r.area} {r.description}", 20) for r in resume.areas_of_expertise]
-    for role in resume.professional_experience:
-        budgets.append((role.tailored_summary, 60))
-        budgets.extend((f"{a.highlight} {a.detail}", 35) for a in role.tailored_achievements)
+    budgets = [(resume.career_profile, 140)]
+    budgets += [(f"{r.area} {r.description}", 26) for r in resume.areas_of_expertise]
+    budgets += [(f"{a.highlight} {a.detail}", 36) for a in resume.key_achievements]
     if (any(len(text.split()) > limit for text, limit in budgets)
-            or sum(len(text.split()) for text, _ in budgets) > 900
+            or sum(len(text.split()) for text, _ in budgets) > 800
             or sum(len(p.split()) for p in letter.paragraphs) > 350):
         raise EvidenceValidationError("content_length")
     # Citations establish provenance, not semantic truth: live prose needs review.
-    tailored = {r.experience_id: r.model_dump() for r in resume.professional_experience}
     assembled = dict(base["fixed"])
-    assembled.update(resume.model_dump(exclude={"professional_experience"}))
-    assembled["experience"] = [
-        {**role, **tailored[role["id"]]} for role in base["fixed"]["experience"]
-    ]
+    assembled.update(resume.model_dump())
     return {
-        "format_version": 2,
+        "format_version": 3,
         "source_resume": base,
         "resume": assembled,
         "cover_letter": letter.model_dump(),
@@ -263,6 +241,7 @@ def generate_package(job_payload: dict, settings) -> dict:
             "model": settings.openai_model if provider.name == "openai" else "mock",
             "base_hash": digest(base), "prompt_hash": digest(prompts),
             "input_hash": digest(context), "selected_evidence_ids": selected,
+            "selected_expertise_ids": selected_expertise,
             "usage": {"resume": resume_usage, "cover_letter": letter_usage},
             "is_example": base.get("is_example", True),
         },

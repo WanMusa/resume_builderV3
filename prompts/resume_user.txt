@@ -1,10 +1,11 @@
-Use the job, career background and complete source evidence below to write a tailored resume targeting about 2-3 pages once Python adds the fixed sections. Be selective; do not reproduce the lengthy source profile, platform descriptions, project details or supporting-detail lists.
+Use the job and complete source evidence below to tailor the generated resume sections. Python will insert the source-written professional experience and all other fixed sections. Target a complete resume of 2-3 pages.
 
 Hard word limits (stay comfortably below them):
-- target_role_tags: 1-3 short, factual positioning labels, at most 18 words combined.
-- career_profile: at most 90 words, focused on the target role's most relevant supported strengths.
-- areas_of_expertise: 4-8 relevant items when sufficient evidence exists, fewer if not. Each item has a short area label and a succinct description, at most 20 words combined. Cite exact evidence.expertise[].id values in evidence_ids.
-- professional_experience: return every background.experience[].id exactly once as experience_id. Each tailored_summary is at most 60 words describing the relevant scope and contribution. Include 1-3 strongest tailored_achievements where evidence exists, fewer for older or less relevant roles. Each bullet has a short boldable highlight and a complementary detail, at most 35 words combined. Cite exact evidence.achievements[].id values in evidence_ids, belonging to that experience_id.
-- ALL visible generated resume text combined: at most 900 words. Aim for 650-800 words for four roles, not the maximum in every section.
+- career_profile: at most 140 words. Give enough context to show seniority, breadth and fit for this role; do not force it into a short generic summary.
+- areas_of_expertise: aim for 8-14 relevant competencies when evidence supports them. Each has a concise label and description, at most 26 words combined. Cite exact evidence.expertise[].id values in evidence_ids.
+- key_achievements: aim for 6-10 distinct, high-value achievements when evidence supports them. Each has a concise highlight and supporting detail, at most 36 words combined. Cite exact evidence.achievements[].id values in evidence_ids; a bullet may cite multiple related achievements.
+- All generated resume text combined: at most 800 words. Aim for approximately 600-750 generated words; the Python-rendered fixed sections also count toward the final 2-3 page target.
 
-Avoid repeating the same claim across the profile, expertise and role summaries. Prioritise supported outcomes over long responsibility lists. Summarise technical context instead of listing every tool or project detail. Preserve critical facts and all roles, but never pad a weakly matched role. Do not put citation IDs, section headings or fixed facts in the generated prose.
+Use ATS wording from the job description naturally. Include a relevant skill when explicit evidence supports it. You may also infer a transferable competency or working familiarity when it is a clear consequence of several source facts (for example, repeated delivery across enterprise platforms can support integration or systems-analysis capability). Do not claim hands-on use of an unnamed tool, mastery, years, ownership, credentials or outcomes without evidence. Phrase uncertain adjacent capabilities cautiously or omit them.
+
+Do not repeat fixed professional experience bullets verbatim in key achievements. Prioritise distinct, measurable outcomes and preserve all source achievements marked critical. Avoid repeating the same claim across the profile, competencies and key achievements. Do not put citation IDs, section headings or fixed facts in generated prose.

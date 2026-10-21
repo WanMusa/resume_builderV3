@@ -17,7 +17,7 @@ BLUE = RGBColor(0x36, 0x5F, 0x91)
 
 class PackageFormatError(ValueError):
     def __init__(self):
-        super().__init__("Legacy saved content requires explicit regeneration via /jobs/{id}/regenerate")
+        super().__init__("Unsupported saved package; regenerate via /jobs/{id}/regenerate")
 
 
 def _document(template: Path):
@@ -58,8 +58,9 @@ def _section(doc, title: str):
 
 def _bullet(doc, highlight: str, detail: str):
     paragraph = _paragraph(doc, "\u2022  " + highlight, bold=True, justify=True)
-    run = paragraph.add_run(" " + detail)
-    run.font.name, run.font.size = FONT, Pt(10)
+    if detail:
+        run = paragraph.add_run(" " + detail)
+        run.font.name, run.font.size = FONT, Pt(10)
     paragraph.paragraph_format.left_indent = Cm(0.35)
     paragraph.paragraph_format.first_line_indent = Cm(-0.35)
     paragraph.paragraph_format.keep_together = True
@@ -103,17 +104,22 @@ def _identity(doc, identity: dict, *, cover: bool = False, tags=()):
         _paragraph(doc, identity["location"], font=font, size=size)
     contact = _paragraph(doc, font=font, size=size, after=12 if cover else 6)
     parts = []
-    for key in ("email", "mobile", "location", "linkedin"):
-        if cover and key in ("location", "linkedin"):
+    for key in ("email", "mobile", "location", "linkedin", "website"):
+        if cover and key in ("location", "linkedin", "website"):
             continue
         value = identity.get(key)
         if value:
             if parts:
                 run = contact.add_run(" | ")
                 run.font.name, run.font.size = font, Pt(size)
-            if key in ("email", "linkedin"):
-                _hyperlink(contact, value if key == "email" else "LinkedIn",
-                           f"mailto:{value}" if key == "email" else value, font, size)
+            if key in ("email", "linkedin", "website"):
+                if key == "email":
+                    label, url = value, f"mailto:{value}"
+                elif key == "linkedin":
+                    label, url = "LinkedIn", value
+                else:
+                    label, url = value.removeprefix("https://").removeprefix("www.").rstrip("/"), value
+                _hyperlink(contact, label, url, font, size)
             else:
                 run = contact.add_run(value)
                 run.font.name, run.font.size = font, Pt(size)
@@ -148,33 +154,72 @@ def _bytes(doc) -> bytes:
 
 
 def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> dict[str, bytes]:
-    if package.get("format_version") != 2:
+    version = package.get("format_version")
+    if version not in (2, 3):
         raise PackageFormatError()
     resume = package["resume"]
     doc = _document(assets_dir / "templates" / "resume_template.docx")
     _banner(doc, package)
-    _identity(doc, resume["identity"], tags=resume["target_role_tags"])
+    _identity(doc, resume["identity"], tags=resume.get("target_role_tags", ()) if version == 2 else ())
     _section(doc, "CAREER PROFILE")
     _paragraph(doc, resume["career_profile"], justify=True)
-    _section(doc, "AREAS OF EXPERTISE/HIGHLIGHTS")
-    for item in resume["areas_of_expertise"]:
-        paragraph = _paragraph(doc, item["area"], bold=True, after=2)
-        run = paragraph.add_run(": " + item["description"])
-        run.font.name, run.font.size = FONT, Pt(10)
+    if version == 2:
+        _section(doc, "AREAS OF EXPERTISE/HIGHLIGHTS")
+        for item in resume["areas_of_expertise"]:
+            paragraph = _paragraph(doc, item["area"], bold=True, after=2)
+            run = paragraph.add_run(": " + item["description"])
+            run.font.name, run.font.size = FONT, Pt(10)
+    else:
+        _section(doc, "CORE COMPETENCIES & KEY ACHIEVEMENTS")
+        for item in resume["areas_of_expertise"]:
+            _bullet(doc, f"{item['area']}:", item["description"])
+        if resume["key_achievements"]:
+            heading = _paragraph(doc, "Key Achievements", bold=True, before=5, after=1)
+            heading.paragraph_format.keep_with_next = True
+            for achievement in resume["key_achievements"]:
+                _bullet(doc, achievement["highlight"], achievement["detail"])
+    projects = resume.get("selected_projects") or []
+    if projects:
+        _section(doc, "AGENTIC AI & AUTOMATION SOLUTIONS")
+        introduction = resume.get("selected_projects_intro")
+        if introduction:
+            _paragraph(doc, introduction, justify=True, after=5)
+        for project in projects:
+            name = project.get("name", "").strip()
+            description = project.get("description", "").strip()
+            if name:
+                heading = _paragraph(doc, name, bold=True, before=4, after=1)
+                if description:
+                    heading.paragraph_format.keep_with_next = True
+            if description:
+                _paragraph(doc, description, justify=True, after=3)
+            for highlight in project.get("highlights", []):
+                _bullet(doc, highlight, "")
+        project_url = resume.get("selected_projects_url")
+        if project_url:
+            paragraph = _paragraph(
+                doc, "Further project details and demonstrations: ", after=8,
+            )
+            _hyperlink(paragraph, "musakamil.com", project_url, FONT, 10)
     _section(doc, "PROFESSIONAL EXPERIENCE")
     for role in resume["experience"]:
         paragraph = _paragraph(doc, f"{role['title']}  \u2015  {role['employer']}",
                                bold=True, size=11, before=10, after=2)
         _right_date(doc, paragraph, role["dates"])
         paragraph.paragraph_format.keep_with_next = True
-        _paragraph(doc, role["tailored_summary"], justify=True, after=6)
-        achievements = role["tailored_achievements"]
-        if achievements:
-            paragraph = _paragraph(doc, "Key Achievements", bold=True, after=1)
-            paragraph.runs[0].italic = True
-            paragraph.paragraph_format.keep_with_next = True
-        for achievement in achievements:
-            _bullet(doc, achievement["highlight"], achievement["detail"])
+        if version == 2:
+            _paragraph(doc, role["tailored_summary"], justify=True, after=6)
+            achievements = role["tailored_achievements"]
+            if achievements:
+                paragraph = _paragraph(doc, "Key Achievements", bold=True, after=1)
+                paragraph.runs[0].italic = True
+                paragraph.paragraph_format.keep_with_next = True
+            for achievement in achievements:
+                _bullet(doc, achievement["highlight"], achievement["detail"])
+        else:
+            _paragraph(doc, role["summary"], justify=True, after=6)
+            for highlight in role.get("highlights", []):
+                _bullet(doc, highlight, "")
     _section(doc, "EDUCATION")
     for education in resume.get("education_records") or resume.get("education", []):
         if isinstance(education, str):
