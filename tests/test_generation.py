@@ -467,6 +467,54 @@ def test_supabase_rejects_subdirectories_and_unsafe_keys(key):
         storage.upload(b"document", key)
 
 
+def test_supabase_signed_download_url_is_short_lived_and_same_origin(monkeypatch):
+    settings = SimpleNamespace(supabase_url="https://storage.example",
+                               supabase_key="test-only", supabase_bucket="private-artifacts")
+    calls = []
+
+    def post(self, url, **kwargs):
+        calls.append((url, kwargs))
+        return httpx.Response(200, json={"signedURL": "/object/sign/private-artifacts/Candidate-Resume.docx?token=temporary"})
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    monkeypatch.setattr(SupabaseStorage, "check_bucket", lambda self: None)
+    storage = SupabaseStorage(settings)
+
+    signed_url = storage.signed_download_url("Candidate-Resume.docx")
+
+    assert signed_url == "https://storage.example/storage/v1/object/sign/private-artifacts/Candidate-Resume.docx?token=temporary"
+    assert calls[0][1]["json"] == {"expiresIn": 300}
+    assert calls[0][1]["headers"]["apikey"] == "test-only"
+    with pytest.raises(ValueError, match="safe root-level"):
+        storage.signed_download_url("../private/Resume.docx")
+
+
+def test_supabase_signed_download_url_rejects_foreign_origins(monkeypatch):
+    settings = SimpleNamespace(supabase_url="https://storage.example",
+                               supabase_key="test-only", supabase_bucket="private-artifacts")
+    monkeypatch.setattr(SupabaseStorage, "check_bucket", lambda self: None)
+    monkeypatch.setattr(httpx.Client, "post", lambda *args, **kwargs: httpx.Response(
+        200, json={"signedURL": "https://attacker.example/file.docx"},
+    ))
+
+    with pytest.raises(RuntimeError, match="unexpected origin"):
+        SupabaseStorage(settings).signed_download_url("Candidate-Resume.docx")
+
+
+def test_supabase_signed_download_url_refuses_public_bucket(monkeypatch):
+    settings = SimpleNamespace(supabase_url="https://storage.example",
+                               supabase_key="test-only", supabase_bucket="private-artifacts")
+    monkeypatch.setattr(httpx.Client, "get", lambda *args, **kwargs: httpx.Response(
+        200, json={"public": True},
+    ))
+    monkeypatch.setattr(httpx.Client, "post", lambda *args, **kwargs: pytest.fail(
+        "must not sign an object in a public bucket",
+    ))
+
+    with pytest.raises(ValueError, match="private"):
+        SupabaseStorage(settings).signed_download_url("Candidate-Resume.docx")
+
+
 def test_supabase_failure_is_sanitized_and_overwrite_key_stable(monkeypatch):
     settings = SimpleNamespace(supabase_url="https://storage.example", supabase_key="test-only",
                                supabase_bucket="private-artifacts")

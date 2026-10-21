@@ -111,6 +111,7 @@ jobs:
           DEPLOY_DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
           DEPLOY_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DEPLOY_API_TOKEN: ${{ secrets.API_TOKEN }}
+          DEPLOY_JOB_RUNS_API_TOKEN: ${{ secrets.JOB_RUNS_API_TOKEN }}
           DEPLOY_DB_USER: ${{ secrets.DB_USER }}
           DEPLOY_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           DEPLOY_SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -136,7 +137,7 @@ jobs:
           import shlex
           from pathlib import Path
 
-          for key in ("DATABASE_PASSWORD", "OPENAI_API_KEY", "API_TOKEN", "DB_USER",
+          for key in ("DATABASE_PASSWORD", "OPENAI_API_KEY", "API_TOKEN", "JOB_RUNS_API_TOKEN", "DB_USER",
                       "SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SECRET_KEY", "SUPABASE_BUCKET"):
               name = f"DEPLOY_{key}"
               print(f"export {name}={shlex.quote(os.environ.get(name, ''))}")

@@ -12,7 +12,8 @@ from starlette.concurrency import run_in_threadpool
 from app.config import Settings
 from app.db import make_engine, make_session_factory
 from app.importer import EnvelopeValidationError, import_envelope
-from app.models import Batch, Job
+from app.models import Artifact, Batch, GeneratedDocument, Job
+from app.storage import get_storage
 from app.worker import regenerate_job, rerender_job, retry_job
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
@@ -41,6 +42,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                           expected.encode()):
                 raise HTTPException(401, "Invalid bearer token", headers={"WWW-Authenticate": "Bearer"})
 
+    def job_runs_authenticated(request: Request):
+        token = settings.job_runs_api_token
+        if not token or token == settings.api_token:
+            raise HTTPException(503, "Job Runs API requires a separate token")
+        expected = "Bearer" + " " + token
+        if not secrets.compare_digest(request.headers.get("authorization", "").encode(),
+                                      expected.encode()):
+            raise HTTPException(401, "Invalid Job Runs token", headers={"WWW-Authenticate": "Bearer"})
+
     def session():
         with factory() as db:
             yield db
@@ -55,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     router = APIRouter(dependencies=[Depends(authenticated)])
+    job_runs_router = APIRouter(prefix="/job-runs", dependencies=[Depends(job_runs_authenticated)])
 
     def batch_view(batch):
         return {"id": batch.id, "status": batch.status, "source": batch.source,
@@ -164,5 +175,82 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.commit()
         return job_view(job)
 
+    @job_runs_router.get("")
+    def job_runs(db=Depends(session)):
+        jobs = list(db.scalars(select(Job).order_by(Job.created_at.desc()).limit(50)))
+        if not jobs:
+            return []
+        job_ids = [job.id for job in jobs]
+        checkpoints = set(db.scalars(select(GeneratedDocument.job_id).where(
+            GeneratedDocument.job_id.in_(job_ids),
+        )))
+        resume_artifacts = list(db.scalars(
+            select(Artifact).where(
+                Artifact.job_id.in_(job_ids),
+                Artifact.kind == "resume",
+                Artifact.backend == "supabase",
+                Artifact.bucket == settings.supabase_bucket,
+            ).order_by(Artifact.created_at.desc())
+        ))
+        available_resumes = {artifact.job_id for artifact in resume_artifacts}
+        terminal = {"completed", "needs_review", "failed"}
+        return [{
+            "id": job.id,
+            "title": job.payload.get("title"),
+            "company": job.payload.get("company"),
+            "status": job.status,
+            "attempts": job.attempts,
+            "error": job.error,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+            "resume_available": job.id in available_resumes,
+            "can_regenerate": job.id in checkpoints and job.status in terminal,
+            "can_retry": job.status == "failed" and job.id not in checkpoints,
+        } for job in jobs]
+
+    @job_runs_router.post("/{job_id}/retry", status_code=202)
+    def job_run_retry(job_id: str, db=Depends(session)):
+        try:
+            job = retry_job(db, job_id)
+        except LookupError:
+            raise HTTPException(404, "Job not found") from None
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        db.commit()
+        return job_view(job)
+
+    @job_runs_router.post("/{job_id}/regenerate", status_code=202)
+    def job_run_regenerate(job_id: str, confirm_paid_generation: bool = False, db=Depends(session)):
+        if not confirm_paid_generation:
+            raise HTTPException(400, "Explicit confirm_paid_generation=true is required")
+        try:
+            job = regenerate_job(db, job_id)
+        except LookupError:
+            raise HTTPException(404, "Job not found") from None
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        db.commit()
+        return job_view(job)
+
+    @job_runs_router.get("/{job_id}/resume-url")
+    def job_run_resume_url(job_id: str, db=Depends(session)):
+        job = db.get(Job, job_id)
+        if job is None:
+            raise HTTPException(404, "Job not found")
+        artifact = db.scalar(select(Artifact).where(
+            Artifact.job_id == job_id,
+            Artifact.kind == "resume",
+            Artifact.backend == "supabase",
+            Artifact.bucket == settings.supabase_bucket,
+        ).order_by(Artifact.created_at.desc()))
+        if artifact is None:
+            raise HTTPException(404, "Resume document is not available")
+        try:
+            url = get_storage(settings).signed_download_url(artifact.object_key, expires_in=300)
+        except (RuntimeError, ValueError):
+            raise HTTPException(502, "Could not create a resume download link") from None
+        return {"url": url, "expires_in": 300}
+
     app.include_router(router)
+    app.include_router(job_runs_router)
     return app

@@ -390,7 +390,7 @@ def test_workflow_guards_and_shell_syntax():
     assert "cancel-in-progress: false" in workflow
     assert "contents: read" in workflow
     assert "ssh-keyscan" not in workflow
-    for key in ("DATABASE_PASSWORD", "OPENAI_API_KEY", "API_TOKEN", "DB_USER"):
+    for key in ("DATABASE_PASSWORD", "OPENAI_API_KEY", "API_TOKEN", "JOB_RUNS_API_TOKEN", "DB_USER"):
         assert f"secrets.{key}" in workflow
     assert "CORE_TEST_DATABASE_URL" in workflow
     assert "PROVISION_TEST_CONTAINER" in workflow
@@ -411,15 +411,18 @@ def test_runtime_secrets_merge_preserves_settings(tmp_path):
     target.write_text("# private runtime\nPROVIDER=openai\nDATABASE_PASSWORD=old\nCUSTOM=value\n")
     runtime.configure(tmp_path, {"DEPLOY_DATABASE_PASSWORD": "new-password",
                                 "DEPLOY_OPENAI_API_KEY": "fixture-key",
-                                "DEPLOY_API_TOKEN": "fixture-token"})
+                                "DEPLOY_API_TOKEN": "fixture-token",
+                                "DEPLOY_JOB_RUNS_API_TOKEN": "runs-fixture-token"})
     settings = Settings(_env_file=target)
     assert settings.database_password == "new-password"
     assert settings.openai_api_key == "fixture-key"
     assert settings.api_token == "fixture-token"
+    assert settings.job_runs_api_token == "runs-fixture-token"
     assert settings.provider == "openai"
     assert "CUSTOM=value" in target.read_text()
     runtime.configure(tmp_path, {})
     assert Settings(_env_file=target).openai_api_key == "fixture-key"
+    assert Settings(_env_file=target).job_runs_api_token == "runs-fixture-token"
     if os.name != "nt":
         assert target.stat().st_mode & 0o777 == 0o600
 

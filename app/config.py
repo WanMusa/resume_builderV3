@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://resume_builder@localhost:5432/resume_builder"
     database_password: str | None = None
     api_token: str | None = None
+    job_runs_api_token: str | None = None
     allow_unauthenticated: bool = False
     provider: Literal["mock", "openai"] = "mock"
     openai_api_key: str | None = None

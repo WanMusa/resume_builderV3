@@ -157,6 +157,8 @@ Add these runtime secrets in the repository's Actions settings:
 | --- | --- |
 | `DATABASE_PASSWORD` | Password assigned to the dedicated `resume_builder` role |
 | `API_TOKEN` | Bearer token accepted by the inbox API |
+| `JOB_RUNS_API_TOKEN` | Optional separate token for the Chrome extension's limited Job Runs API |
+| `JOB_RUNS_API_TOKEN` | Optional separate bearer token limited to the Chrome extension's Job Runs routes |
 | `OPENAI_API_KEY` | Runtime generation key, only needed when using `PROVIDER=openai` |
 | `DB_USER` | Optional existing PostgreSQL admin login used for local provisioning; defaults to the container's `POSTGRES_USER` |
 | `SUPABASE_URL` | HTTPS URL of the output storage project |
@@ -174,6 +176,9 @@ and `API_TOKEN`, and preflight requires valid Supabase settings and a private bu
 The existing PostgreSQL container must allow its admin login over the local Unix
 socket; no database admin password is sent to the app. A supplied database password
 is applied only to `resume_builder`; use distinct passwords for different apps.
+Set a unique random `JOB_RUNS_API_TOKEN` Actions secret to enable the extension's
+Job Runs list, retry/regenerate actions, and signed resume-link endpoint. It is
+separate from `API_TOKEN`; without it those routes remain disabled.
 
 On the VPS, install Python 3, Bash, Git, `flock` (util-linux), GNU `timeout` (coreutils),
 Docker Engine and Compose v2 supporting `up --wait` (2.20+ recommended).
@@ -434,6 +439,21 @@ Job details include generated content and Supabase bucket/object keys
 (legacy local artifacts may still have local paths),
 not public URLs. Health checks database connectivity without exposing credentials.
 New outputs are Word documents, not Markdown.
+
+### Restricted Chrome Job Runs API
+
+The extension's Job Runs view uses a separate `JOB_RUNS_API_TOKEN`, never the
+broader inbox/operator `API_TOKEN`. It exposes only the latest 50 job summaries,
+retry for failed jobs without a generation checkpoint, explicitly confirmed
+regeneration, and resume download-link creation. `GET /job-runs/{id}/resume-url`
+returns a five-minute signed URL for a private Supabase object; the bucket stays
+private. The public routes are under `/resume/job-runs` through the shared proxy.
+
+Configure a unique random `JOB_RUNS_API_TOKEN` as a GitHub Actions secret and
+redeploy. In the extension Settings, set the Job Runs API base URL to
+`https://wanagents.duckdns.org` and enter that token in the separate Job Runs API
+token field. The extension stores it in local Chrome storage, so use only this
+restricted token there. Regeneration makes fresh model calls and may incur cost.
 
 ### Re-render an existing checkpoint without LLM calls
 
