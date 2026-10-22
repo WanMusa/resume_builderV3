@@ -39,7 +39,7 @@ def test_mock_package_fixed_facts_render_and_storage(settings, job, tmp_path, mo
     original = (settings.assets_dir / "base_resume.json").read_bytes()
     package = generate_package(job, settings)
     base = json.loads(original)
-    assert package["format_version"] == 3
+    assert package["format_version"] == 4
     assert package["source_resume"] == base
     for key in ("identity", "education", "certifications"):
         assert package["resume"][key] == base["fixed"][key]
@@ -73,62 +73,63 @@ def test_mock_package_fixed_facts_render_and_storage(settings, job, tmp_path, mo
 
 
 def test_word_renders_fixed_experience_and_tailored_highlights(settings, job):
-    package = generate_package(job, settings)
+    package = json.loads(json.dumps(generate_package(job, settings)))
     resume = package["resume"]
-    resume["identity"].update(email="candidate@example.com", mobile="1234",
+    fixed = package["source_resume"]["fixed"]
+    fixed["identity"].update(email="candidate@example.com", mobile="1234",
                               location="Example City", linkedin="https://example.com/profile")
-    role = resume["experience"][0]
+    role = fixed["experience"][0]
     role.update(summary="Fixed role summary.", highlights=["Fixed role contribution."])
     resume["career_profile"] = "Concise tailored profile."
     resume["areas_of_expertise"] = [{"area": "Systems integration",
                                     "description": "Connects business platforms through reliable interfaces.",
                                     "evidence_ids": ["skill-analysis"]}]
-    resume["identity"]["website"] = "https://musakamil.com/"
-    resume["key_achievements"] = [{"highlight": "Improved reporting.",
-                                   "detail": "Validated requirements with stakeholders.",
-                                   "evidence_ids": ["PRIVATE-CITATION-ID"]}]
-    resume["education_records"] = [{"qualification": "Fixed qualification",
-                                    "institution": "Fixed institution", "period": "2020",
-                                    "details": "Fixed education details"}]
-    resume["education"] = ["DUPLICATE EDUCATION STRING"]
-    resume["references"] = "Fixed references"
-    resume["certifications"] = ["Fixed certification (2021)"]
-    resume["selected_projects_intro"] = (
+    fixed["identity"]["website"] = "https://musakamil.com/"
+    fixed["education_records"] = [{"qualification": "Fixed qualification",
+                                   "institution": "Fixed institution", "period": "2020",
+                                   "details": "Fixed education details"}]
+    fixed["education"] = ["DUPLICATE EDUCATION STRING"]
+    fixed["references"] = "Fixed references"
+    fixed["certifications"] = ["Fixed certification (2021)"]
+    fixed["selected_projects_intro"] = (
         "Server-side solutions run on a private Oracle Cloud VPS using Docker; "
         "job-ad capture runs locally in Chrome."
     )
-    resume["selected_projects_url"] = "https://musakamil.com/"
-    resume["selected_projects"] = [
+    fixed["selected_projects_url"] = "https://musakamil.com/"
+    fixed["selected_projects"] = [
         {"name": "Telegram – Gmail Assistant",
          "description": "An event-driven Gmail assistant with human approval in Telegram."},
         {"name": "Local Web Scraping",
          "description": "A Chrome extension that captures job adverts locally without an LLM."},
     ]
+    resume["selected_projects"] = [{"name": "Model copy", "description": "MODEL REWRITTEN AI PROJECT"}]
+    resume["identity"]["website"] = "https://model-rewritten.invalid/"
+    resume["experience"][0]["summary"] = "MODEL REWRITTEN EXPERIENCE"
+    resume["experience"][0]["highlights"] = ["MODEL REWRITTEN ACHIEVEMENT"]
+    resume["selected_projects"][0]["description"] = "MODEL REWRITTEN AI PROJECT"
     package["source_resume"]["fixed"]["career_profile"] = "SOURCE PROFILE CONTEXT"
     package["provenance"].update(provider="openai", is_example=False)
     package["review_required"] = True
     files = render_package(package, ROOT / "assets", job)
     doc = Document(BytesIO(files[filenames(package, job)[0]]))
     text = "\n".join(p.text for p in doc.paragraphs)
-    for value in ("Fixed role summary.", "Fixed role contribution.", "Improved reporting.",
-                  "Validated requirements with stakeholders.", "Concise tailored profile.",
+    for value in ("Fixed role summary.", "Fixed role contribution.", "Concise tailored profile.",
                   "Fixed qualification", "Fixed institution", "Fixed education details",
                   "Fixed references", "Fixed certification", role["employer"], role["dates"],
-                  "AGENTIC AI & AUTOMATION SOLUTIONS", resume["selected_projects_intro"],
+                  "AGENTIC AI & AUTOMATION SOLUTIONS", fixed["selected_projects_intro"],
                   "Telegram – Gmail Assistant", "An event-driven Gmail assistant with human approval in Telegram.",
                   "Local Web Scraping", "A Chrome extension that captures job adverts locally without an LLM.",
                   "Further project details and demonstrations:"):
         assert value in text
-    for value in ("SOURCE ROLE CONTEXT", "SOURCE PLATFORM CONTEXT", "DUPLICATE", "GENERATED DRAFT"):
+    for value in ("SOURCE ROLE CONTEXT", "SOURCE PLATFORM CONTEXT", "DUPLICATE", "GENERATED DRAFT",
+                  "MODEL REWRITTEN EXPERIENCE", "MODEL REWRITTEN ACHIEVEMENT", "MODEL REWRITTEN AI PROJECT",
+                  "model-rewritten.invalid"):
         assert value not in text
     assert "PRIVATE-CITATION-ID" not in text
     assert text.count("Fixed qualification") == 1
     name = next(p for p in doc.paragraphs if p.text == resume["identity"]["name"])
     assert name.runs[0].font.name == "Lato" and name.runs[0].font.size.pt == 18
     assert str(name.runs[0].font.color.rgb) == "365F91"
-    bullet = next(p for p in doc.paragraphs if "Improved reporting." in p.text)
-    assert bullet.runs[0].bold and not bullet.runs[1].bold
-    assert bullet.paragraph_format.keep_together
     competency_bullet = next(p for p in doc.paragraphs if "Systems integration:" in p.text)
     experience_bullet = next(p for p in doc.paragraphs if "Fixed role contribution." in p.text)
     assert competency_bullet.paragraph_format.left_indent == experience_bullet.paragraph_format.left_indent
@@ -192,6 +193,58 @@ def test_existing_v2_checkpoint_still_renders(settings, job):
     assert "Saved V2 achievement." in text
 
 
+def test_existing_v3_checkpoint_still_renders_its_generated_achievements(settings, job):
+    package = generate_package(job, settings)
+    package["format_version"] = 3
+    package["resume"]["experience"][0].update(
+        tailored_summary="Saved V3 tailored role summary.",
+        tailored_achievements=[{"highlight": "Saved V3 experience achievement.",
+                                "detail": "Keep legacy role content renderable.",
+                                "evidence_ids": ["legacy-role-evidence"]}],
+    )
+    package["resume"]["key_achievements"] = [{
+        "highlight": "Saved V3 achievement.",
+        "detail": "Keep this existing checkpoint renderable.",
+        "evidence_ids": ["legacy-evidence"],
+    }]
+
+    files = render_package(package, ROOT / "assets", job)
+    doc = Document(BytesIO(files[filenames(package, job)[0]]))
+    text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+
+    assert "Saved V3 tailored role summary." in text
+    assert "Saved V3 experience achievement." in text
+    assert "Keep legacy role content renderable." in text
+    assert "Saved V3 achievement." in text
+
+
+def test_v4_renderer_ignores_generated_copies_of_fixed_sections(settings, job):
+    package = json.loads(json.dumps(generate_package(job, settings)))
+    package["source_resume"]["fixed"]["selected_projects"] = [
+        {"name": "Fixed project", "description": "Fixed AI project description."}
+    ]
+    package["resume"]["selected_projects"] = [
+        {"name": "Model copy", "description": "MODEL REWRITTEN PROJECT"}
+    ]
+    package["resume"]["identity"]["website"] = "https://model-rewritten.invalid/"
+    package["resume"]["experience"][0]["summary"] = "MODEL REWRITTEN EXPERIENCE"
+    package["resume"]["experience"][0]["highlights"] = ["MODEL REWRITTEN HIGHLIGHT"]
+    package["resume"]["selected_projects"][0]["description"] = "MODEL REWRITTEN PROJECT"
+
+    files = render_package(package, ROOT / "assets", job)
+    doc = Document(BytesIO(files[filenames(package, job)[0]]))
+    text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+    links = [relationship.target_ref for relationship in doc.part.rels.values() if relationship.is_external]
+    fixed = package["source_resume"]["fixed"]
+
+    assert fixed["identity"]["website"] in links
+    assert fixed["experience"][0]["summary"] in text
+    assert fixed["experience"][0]["highlights"][0] in text
+    assert "Fixed AI project description." in text
+    assert "model-rewritten.invalid" not in text
+    assert "MODEL REWRITTEN" not in text
+
+
 def test_model_cannot_modify_fixed_fields(settings, job):
     _, context, prompts = prepare(job, settings)
     output, _ = MockProvider().generate("resume", context, prompts, ResumeVariables)
@@ -199,6 +252,8 @@ def test_model_cannot_modify_fixed_fields(settings, job):
         ResumeVariables.model_validate({**output.model_dump(), "identity": {"name": "Invented"}})
     with pytest.raises(ValidationError):
         ResumeVariables.model_validate({**output.model_dump(), "professional_experience": []})
+    with pytest.raises(ValidationError):
+        ResumeVariables.model_validate({**output.model_dump(), "key_achievements": []})
 
 
 def test_compact_context_and_fixed_role_order(settings, job):
@@ -206,7 +261,8 @@ def test_compact_context_and_fixed_role_order(settings, job):
     base = json.loads(path.read_text())
     base["fixed"]["experience"].append({"id": "role-2", "title": "Engineer",
                                         "employer": "Example", "dates": "2019-2022",
-                                        "summary": "Long background context"})
+                                        "summary": "Long background context",
+                                        "highlights": ["Fixed engineering contribution"]})
     base["fixed"]["career_profile"] = "Original source profile"
     base["fixed"]["selected_projects"] = [{"name": "Project context", "details": "Complete details"}]
     base["achievements"].extend([
@@ -230,16 +286,15 @@ def test_compact_context_and_fixed_role_order(settings, job):
     assert "capability-level inference" in prompts["resume_system"]
     assert "hands-on use" in prompts["resume_system"]
     package = generate_package(job, settings)
+    assert package["format_version"] == 4
     assert [r["id"] for r in package["resume"]["experience"]] == ["role-1", "role-2"]
     assert package["resume"]["experience"] == base["fixed"]["experience"]
     assert package["source_resume"] == base
 
 
 @pytest.mark.parametrize("invalid,reason", [
-    ("achievement", "unknown_evidence"), ("expertise", "unknown_evidence"),
-    ("letter", "unknown_evidence"), ("duplicate-achievement", "repeated_achievements"),
-    ("missing-critical", "missing_critical"), ("long-profile", "content_length"),
-    ("long-achievement", "content_length"), ("long-expertise", "content_length"),
+    ("expertise", "unknown_evidence"), ("letter", "unknown_evidence"),
+    ("long-profile", "content_length"), ("long-expertise", "content_length"),
     ("long-letter", "content_length"),
 ])
 def test_rejects_invalid_or_overlong_prose(settings, job, monkeypatch, invalid, reason):
@@ -248,19 +303,10 @@ def test_rejects_invalid_or_overlong_prose(settings, job, monkeypatch, invalid, 
     def alter(self, kind, context, prompts, schema):
         result, usage = original(self, kind, context, prompts, schema)
         if kind == "resume":
-            if invalid == "achievement":
-                result.key_achievements[0].evidence_ids = ["invented"]
-            elif invalid == "expertise":
+            if invalid == "expertise":
                 result.areas_of_expertise[0].evidence_ids = ["invented"]
-            elif invalid == "duplicate-achievement":
-                result.key_achievements.append(result.key_achievements[0])
-            elif invalid == "missing-critical":
-                result.key_achievements = []
             elif invalid == "long-profile":
-                result.career_profile = "word " * 141
-            elif invalid == "long-achievement":
-                result.key_achievements[0].highlight = "Impact"
-                result.key_achievements[0].detail = "word " * 36
+                result.career_profile = "word " * 151
             elif invalid == "long-expertise":
                 result.areas_of_expertise[0].area = "Analysis"
                 result.areas_of_expertise[0].description = "word " * 26
@@ -287,7 +333,7 @@ def test_base_rejects_duplicate_and_unknown_ids(settings):
         validate_base(base)
 
 
-@pytest.mark.parametrize("field", ["profile", "key_achievement", "expertise", "letter"])
+@pytest.mark.parametrize("field", ["profile", "expertise", "letter"])
 @pytest.mark.parametrize("excess", [0, 1])
 def test_word_limit_boundaries(settings, job, monkeypatch, field, excess):
     original = MockProvider.generate
@@ -296,10 +342,7 @@ def test_word_limit_boundaries(settings, job, monkeypatch, field, excess):
         result, usage = original(self, kind, context, prompts, schema)
         if kind == "resume":
             if field == "profile":
-                result.career_profile = "word " * (140 + excess)
-            elif field == "key_achievement":
-                result.key_achievements[0].highlight = "Impact"
-                result.key_achievements[0].detail = "word " * (35 + excess)
+                result.career_profile = "word " * (150 + excess)
             elif field == "expertise":
                 result.areas_of_expertise[0].area = "Analysis"
                 result.areas_of_expertise[0].description = "word " * (25 + excess)
@@ -313,7 +356,7 @@ def test_word_limit_boundaries(settings, job, monkeypatch, field, excess):
             generate_package(job, settings)
         assert error.value.reason == "content_length"
     else:
-        assert generate_package(job, settings)["format_version"] == 3
+        assert generate_package(job, settings)["format_version"] == 4
 
 
 @pytest.mark.parametrize("excess", [0, 1])
@@ -322,10 +365,11 @@ def test_combined_resume_word_budget(settings, job, monkeypatch, excess):
     base = json.loads(path.read_text())
     base["fixed"]["experience"] = [
         {"id": f"role-{i}", "employer": "Example", "title": "Analyst", "dates": "2020-2021",
-         "summary": "Fixed source experience summary."}
+         "summary": "Fixed source experience summary.",
+         "highlights": ["Fixed source experience contribution."]}
         for i in range(5)
     ]
-    base["expertise"] = [{"id": f"skill-{i}", "text": "Analysis"} for i in range(12)]
+    base["expertise"] = [{"id": f"skill-{i}", "text": "Analysis"} for i in range(14)]
     base["achievements"] = [
         {"id": f"achievement-{i}-{j}", "experience_id": f"role-{i}", "text": "Delivered analysis"}
         for i in range(5) for j in range(2)
@@ -337,16 +381,10 @@ def test_combined_resume_word_budget(settings, job, monkeypatch, excess):
         if kind != "resume":
             return original(self, kind, context, prompts, schema)
         result = {
-            "career_profile": "word " * 140,
+            "career_profile": "word " * (146 + excess),
             "areas_of_expertise": [
                 {"area": "Analysis", "description": "word " * 25, "evidence_ids": [r["id"]]}
                 for r in base["expertise"]
-            ],
-            "key_achievements": [
-                {"highlight": "Impact",
-                 "detail": "word " * (35 if i < 9 else (23 + excess)),
-                 "evidence_ids": [f"achievement-{i // 2}-{i % 2}"]}
-                for i in range(10)
             ],
         }
         return schema.model_validate(result), {}
@@ -357,16 +395,23 @@ def test_combined_resume_word_budget(settings, job, monkeypatch, excess):
             generate_package(job, settings)
         assert error.value.reason == "content_length"
     else:
-        assert generate_package(job, settings)["format_version"] == 3
+        assert generate_package(job, settings)["format_version"] == 4
 
 
-def test_key_achievement_cannot_cite_unknown_evidence(settings, job, monkeypatch):
+def test_model_output_contains_only_profile_and_competencies(settings, job):
+    _, context, prompts = prepare(job, settings)
+    output, _ = MockProvider().generate("resume", context, prompts, ResumeVariables)
+
+    assert set(output.model_dump()) == {"career_profile", "areas_of_expertise"}
+
+
+def test_competencies_cannot_cite_unknown_evidence(settings, job, monkeypatch):
     original = MockProvider.generate
 
     def unknown_citation(self, kind, context, prompts, schema):
         result, usage = original(self, kind, context, prompts, schema)
         if kind == "resume":
-            result.key_achievements[0].evidence_ids = ["unknown-evidence"]
+            result.areas_of_expertise[0].evidence_ids = ["unknown-evidence"]
         return result, usage
 
     monkeypatch.setattr(MockProvider, "generate", unknown_citation)
@@ -386,9 +431,8 @@ def test_lengthy_source_is_retained_without_expanding_mock_output(settings, job)
     path.write_text(json.dumps(base))
     package = generate_package(job, settings)
     assert package["source_resume"] == base
-    assert len(package["resume"]["key_achievements"]) == 10
+    assert "key_achievements" not in package["resume"]
     assert package["resume"]["experience"] == base["fixed"]["experience"]
-    assert "additional-149" in package["provenance"]["selected_evidence_ids"]
 
 
 @pytest.mark.parametrize("kind,schema", [("resume", ResumeVariables), ("cover_letter", Letter)])
@@ -419,12 +463,11 @@ def test_openai_schema_and_prose_response(settings, job, monkeypatch, kind, sche
         assert contract["strict"] and not contract["schema"]["additionalProperties"]
         if kind == "resume":
             definitions = contract["schema"]["$defs"]
-            assert definitions["Achievement"]["properties"]["evidence_ids"]["items"]["enum"] == [
-                f"evidence-{suffix}"]
-            assert output.key_achievements[0].detail
+            assert set(contract["schema"]["properties"]) == {"career_profile", "areas_of_expertise"}
+            assert "Achievement" not in definitions
+            assert output.career_profile
             assert "professional_experience" not in contract["schema"]["properties"]
             assert "target_role_tags" not in contract["schema"]["properties"]
-            assert contract["schema"]["properties"]["key_achievements"]["maxItems"] == 10
             if empty_expertise:
                 assert contract["schema"]["properties"]["areas_of_expertise"]["maxItems"] == 0
             else:

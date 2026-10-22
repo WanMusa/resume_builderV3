@@ -367,8 +367,7 @@ def test_worker_error_does_not_persist_exception_response(database, payload, pip
     assert "secret-key" not in job.error
 
 
-@pytest.mark.parametrize("reason", ["unknown_evidence", "repeated_achievements", "missing_critical",
-                                  "content_length"])
+@pytest.mark.parametrize("reason", ["unknown_evidence", "content_length"])
 def test_worker_reports_safe_evidence_validation(database, payload, pipeline, monkeypatch, reason):
     from app.generation import EvidenceValidationError
 

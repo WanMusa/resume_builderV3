@@ -155,12 +155,14 @@ def _bytes(doc) -> bytes:
 
 def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> dict[str, bytes]:
     version = package.get("format_version")
-    if version not in (2, 3):
+    if version not in (2, 3, 4):
         raise PackageFormatError()
     resume = package["resume"]
+    fixed = package.get("source_resume", {}).get("fixed", {}) if version == 4 else resume
     doc = _document(assets_dir / "templates" / "resume_template.docx")
     _banner(doc, package)
-    _identity(doc, resume["identity"], tags=resume.get("target_role_tags", ()) if version == 2 else ())
+    _identity(doc, fixed.get("identity", resume["identity"]),
+              tags=resume.get("target_role_tags", ()) if version == 2 else ())
     _section(doc, "CAREER PROFILE")
     _paragraph(doc, resume["career_profile"], justify=True)
     if version == 2:
@@ -173,15 +175,15 @@ def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> 
         _section(doc, "CORE COMPETENCIES & KEY ACHIEVEMENTS")
         for item in resume["areas_of_expertise"]:
             _bullet(doc, f"{item['area']}:", item["description"])
-        if resume["key_achievements"]:
+        if version == 3 and resume.get("key_achievements"):
             heading = _paragraph(doc, "Key Achievements", bold=True, before=5, after=1)
             heading.paragraph_format.keep_with_next = True
             for achievement in resume["key_achievements"]:
                 _bullet(doc, achievement["highlight"], achievement["detail"])
-    projects = resume.get("selected_projects") or []
+    projects = fixed.get("selected_projects", []) if version == 4 else resume.get("selected_projects", [])
     if projects:
         _section(doc, "AGENTIC AI & AUTOMATION SOLUTIONS")
-        introduction = resume.get("selected_projects_intro")
+        introduction = fixed.get("selected_projects_intro") if version == 4 else resume.get("selected_projects_intro")
         if introduction:
             _paragraph(doc, introduction, justify=True, after=5)
         for project in projects:
@@ -195,19 +197,20 @@ def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> 
                 _paragraph(doc, description, justify=True, after=3)
             for highlight in project.get("highlights", []):
                 _bullet(doc, highlight, "")
-        project_url = resume.get("selected_projects_url")
+        project_url = fixed.get("selected_projects_url") if version == 4 else resume.get("selected_projects_url")
         if project_url:
             paragraph = _paragraph(
                 doc, "Further project details and demonstrations: ", after=8,
             )
             _hyperlink(paragraph, "musakamil.com", project_url, FONT, 10)
     _section(doc, "PROFESSIONAL EXPERIENCE")
-    for role in resume["experience"]:
+    experience = fixed.get("experience", resume["experience"]) if version == 4 else resume["experience"]
+    for role in experience:
         paragraph = _paragraph(doc, f"{role['title']}  \u2015  {role['employer']}",
                                bold=True, size=11, before=10, after=2)
         _right_date(doc, paragraph, role["dates"])
         paragraph.paragraph_format.keep_with_next = True
-        if version == 2:
+        if version == 2 or (version == 3 and "tailored_summary" in role):
             _paragraph(doc, role["tailored_summary"], justify=True, after=6)
             achievements = role["tailored_achievements"]
             if achievements:
@@ -221,7 +224,7 @@ def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> 
             for highlight in role.get("highlights", []):
                 _bullet(doc, highlight, "")
     _section(doc, "EDUCATION")
-    for education in resume.get("education_records") or resume.get("education", []):
+    for education in fixed.get("education_records") or fixed.get("education", []) if version == 4 else resume.get("education_records") or resume.get("education", []):
         if isinstance(education, str):
             _paragraph(doc, education)
         else:
@@ -235,15 +238,15 @@ def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> 
                 details = education["details"]
                 _paragraph(doc, details if isinstance(details, str) else "; ".join(details),
                            justify=True)
-    for certification in resume.get("certifications", []):
+    for certification in fixed.get("certifications", []) if version == 4 else resume.get("certifications", []):
         year = re.search(r"\s*\((\d{4})\)\s*$", certification)
         paragraph = _paragraph(doc, certification[:year.start()] if year else certification,
                                bold=True)
         if year:
             _right_date(doc, paragraph, year.group(1))
-    if resume.get("references"):
+    references = fixed.get("references") if version == 4 else resume.get("references")
+    if references:
         _section(doc, "REFERENCES")
-        references = resume["references"]
         _paragraph(doc, references if isinstance(references, str) else "; ".join(references))
 
     letter = _document(assets_dir / "templates" / "cover_letter_template.docx")

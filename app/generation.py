@@ -11,13 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field
 class EvidenceValidationError(ValueError):
     MESSAGES = {
         "unknown_evidence": "Provider referenced unknown or unselected evidence",
-        "repeated_achievements": "Provider repeated achievement IDs",
-        "missing_critical": "Provider omitted critical achievements",
         "content_length": "Provider exceeded the concise resume or cover-letter word budget",
     }
 
-    def __init__(self, reason: Literal["unknown_evidence", "repeated_achievements", "missing_critical",
-                                     "content_length"]):
+    def __init__(self, reason: Literal["unknown_evidence", "content_length"]):
         self.reason = reason
         super().__init__(self.MESSAGES[reason])
 
@@ -28,7 +25,6 @@ class StrictOutput(BaseModel):
 
 Text = Annotated[str, Field(min_length=1, max_length=1800)]
 EvidenceIDs = Annotated[list[str], Field(min_length=1, max_length=32)]
-AchievementEvidenceIDs = Annotated[list[str], Field(min_length=1, max_length=64)]
 
 
 class Expertise(StrictOutput):
@@ -37,16 +33,9 @@ class Expertise(StrictOutput):
     evidence_ids: EvidenceIDs
 
 
-class Achievement(StrictOutput):
-    highlight: Annotated[str, Field(min_length=1, max_length=160)]
-    detail: Annotated[str, Field(min_length=1, max_length=600)]
-    evidence_ids: AchievementEvidenceIDs
-
-
 class ResumeVariables(StrictOutput):
     career_profile: Text
     areas_of_expertise: Annotated[list[Expertise], Field(max_length=14)]
-    key_achievements: Annotated[list[Achievement], Field(max_length=10)]
 
 
 class Letter(StrictOutput):
@@ -67,9 +56,9 @@ def validate_base(base: dict) -> None:
                    for k in ("id", "employer", "title", "dates", "summary")):
             raise ValueError("Base experience requires id, employer, title, dates and summary")
         highlights = role.get("highlights", [])
-        if not isinstance(highlights, list) or any(
+        if not isinstance(highlights, list) or not highlights or any(
                 not isinstance(item, str) or not item.strip() for item in highlights):
-            raise ValueError("Base experience highlights must be a list of nonempty strings")
+            raise ValueError("Base experience requires fixed nonempty highlights")
     for group in (fixed["experience"], base["achievements"], base["expertise"]):
         ids = [r["id"] for r in group]
         if not all(isinstance(i, str) and i.strip() for i in ids) or len(set(ids)) != len(ids):
@@ -117,10 +106,6 @@ class MockProvider:
     def generate(self, kind: str, context: dict, prompts: dict, schema: type[BaseModel]):
         evidence = context["evidence"]
         if kind == "resume":
-            achievements = sorted(
-                evidence["achievements"],
-                key=lambda record: not record.get("critical", False),
-            )[:10]
             result = {
                 "career_profile": "Development preview, not an application-ready resume.",
                 "areas_of_expertise": [
@@ -128,16 +113,7 @@ class MockProvider:
                      "description": " ".join(r["text"].split()[:17]), "evidence_ids": [r["id"]]}
                     for r in evidence["expertise"][:14]
                 ],
-                "key_achievements": [],
             }
-            for record in achievements:
-                words = record["text"].split()
-                split = max(1, min(6, len(words) - 1))
-                result["key_achievements"].append({
-                    "highlight": " ".join(words[:split]),
-                    "detail": " ".join(words[split:split + 28]) or "Documented contribution.",
-                    "evidence_ids": [record["id"]],
-                })
         else:
             result = {"paragraphs": [
                 "Development preview — this is not an application-ready cover letter.",
@@ -160,7 +136,6 @@ class OpenAIProvider:
         achievement_ids = [r["id"] for r in context["evidence"]["achievements"]]
         if kind == "resume":
             definitions = output_schema["$defs"]
-            definitions["Achievement"]["properties"]["evidence_ids"]["items"]["enum"] = achievement_ids
             expertise_ids = [r["id"] for r in context["evidence"]["expertise"]]
             if expertise_ids:
                 definitions["Expertise"]["properties"]["evidence_ids"]["items"]["enum"] = expertise_ids
@@ -201,37 +176,29 @@ def generate_package(job_payload: dict, settings) -> dict:
     if settings.provider != "mock" and base.get("is_example", True):
         raise ValueError("Replace example evidence and set is_example=false before live generation")
     evidence = context["evidence"]
-    achievements = {r["id"]: r for r in evidence["achievements"]}
     expertise = {r["id"]: r for r in evidence["expertise"]}
-    if not achievements:
+    if not evidence["achievements"]:
         raise ValueError("At least one factual achievement is required")
     provider = get_provider(settings)
     resume, resume_usage = provider.generate("resume", context, prompts, ResumeVariables)
     letter, letter_usage = provider.generate("cover_letter", context, prompts, Letter)
-    selected = [evidence_id for item in resume.key_achievements for evidence_id in item.evidence_ids]
     selected_expertise = [evidence_id for item in resume.areas_of_expertise
                           for evidence_id in item.evidence_ids]
-    if (not set(selected) <= achievements.keys()
-            or not set(selected_expertise) <= expertise.keys()
-            or not set(letter.evidence_ids) <= achievements.keys()):
+    achievement_ids = {r["id"] for r in evidence["achievements"]}
+    if (not set(selected_expertise) <= expertise.keys()
+            or not set(letter.evidence_ids) <= achievement_ids):
         raise EvidenceValidationError("unknown_evidence")
-    if len(set(selected)) != len(selected):
-        raise EvidenceValidationError("repeated_achievements")
-    critical = {r["id"] for r in evidence["achievements"] if r.get("critical")}
-    if not critical <= set(selected):
-        raise EvidenceValidationError("missing_critical")
-    budgets = [(resume.career_profile, 140)]
+    budgets = [(resume.career_profile, 150)]
     budgets += [(f"{r.area} {r.description}", 26) for r in resume.areas_of_expertise]
-    budgets += [(f"{a.highlight} {a.detail}", 36) for a in resume.key_achievements]
     if (any(len(text.split()) > limit for text, limit in budgets)
-            or sum(len(text.split()) for text, _ in budgets) > 800
+            or sum(len(text.split()) for text, _ in budgets) > 510
             or sum(len(p.split()) for p in letter.paragraphs) > 350):
         raise EvidenceValidationError("content_length")
     # Citations establish provenance, not semantic truth: live prose needs review.
     assembled = dict(base["fixed"])
     assembled.update(resume.model_dump())
     return {
-        "format_version": 3,
+        "format_version": 4,
         "source_resume": base,
         "resume": assembled,
         "cover_letter": letter.model_dump(),
@@ -240,7 +207,7 @@ def generate_package(job_payload: dict, settings) -> dict:
             "provider": provider.name,
             "model": settings.openai_model if provider.name == "openai" else "mock",
             "base_hash": digest(base), "prompt_hash": digest(prompts),
-            "input_hash": digest(context), "selected_evidence_ids": selected,
+            "input_hash": digest(context), "selected_cover_letter_evidence_ids": letter.evidence_ids,
             "selected_expertise_ids": selected_expertise,
             "usage": {"resume": resume_usage, "cover_letter": letter_usage},
             "is_example": base.get("is_example", True),

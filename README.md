@@ -503,8 +503,8 @@ Live generated drafts finish as `needs_review` rather than claiming semantic
 fact verification. Identity and professional experience are fixed; generated
 profiles, competencies, key achievements and cover letters still need factual review.
 
-Failed jobs report fixed evidence-validation reasons for unknown evidence IDs,
-repeated achievement IDs, omitted critical achievements, or exceeded word budgets. Other exception
+Failed jobs report fixed evidence-validation reasons for unknown evidence IDs
+or exceeded word budgets. Other exception
 details remain redacted to avoid exposing private input or provider responses.
 An existing failed job retains its old error until retried; retrying live
 generation can make additional paid provider calls.
@@ -530,12 +530,13 @@ paid generation; `/retry` is for recovering the current work.
 
 Edit `assets/base_resume.json` and the four files under `prompts/`.
 Stable evidence IDs link achievements to code-controlled roles, dates, employers,
-education, certifications, and identity. The model writes only the career profile,
-competency area/description pairs, and selected key-achievement bullets. The
-professional experience summaries and highlights are fixed in the base resume;
-Python prints them as supplied. Fixed role headers, chronology and qualifications
-also remain Python-controlled. Supporting details and platform descriptions can
-inform generated competencies and highlights without being copied as a source dump.
+education, certifications, and identity. The model writes only the career profile
+and ATS-tailored competency area/description pairs. Professional experience
+summaries and key achievements are fixed in `fixed.experience[].summary` and
+`fixed.experience[].highlights`; Python prints them as supplied. Fixed role headers,
+chronology, website and qualifications also remain Python-controlled. Supporting
+details and platform descriptions can inform competency wording without being
+copied as a source dump.
 The optional fixed `fixed.selected_projects` list is rendered under
 `AGENTIC AI & AUTOMATION SOLUTIONS` between core competencies and professional experience.
 It supports a section introduction (`selected_projects_intro`), a portfolio URL
@@ -543,23 +544,23 @@ It supports a section introduction (`selected_projects_intro`), a portfolio URL
 optional `highlights`; these fields are printed as supplied, not LLM-rewritten.
 The complete original resume is preserved as `source_resume` in the checkpoint;
 the base file is never modified during generation.
-Newly generated checkpoints use package format 3. The renderer continues to
-support V2 checkpoints so saved jobs can still be rerendered without generation.
+Newly generated checkpoints use package format 4. The renderer continues to
+support V2/V3 checkpoints so saved jobs can still be rerendered without generation.
 
-Competencies and key achievements carry internal evidence citations. These IDs are
-validated but never printed in either Word document. Each OpenAI request constrains
-citation IDs to current-source enums. Python additionally rejects unknown evidence
-citations, repeated achievements, omitted critical evidence and invalid JSON.
+Competencies and cover-letter claims carry internal evidence citations. These IDs
+are validated but never printed in either Word document. Each OpenAI request
+constrains citation IDs to current-source enums. Python rejects unknown evidence
+citations and invalid JSON.
 Fixed experience remains in source order and is never model-editable. Empty source
 expertise allows only an empty list.
 Semantic correctness of arbitrary prose is **not** guaranteed by JSON
 validation; all live drafts require review.
 
 The target is about **2-3 pages**, not a guaranteed layout-engine page count.
-Hard limits: profile 140 words; up to 14 competency items, each 26 words including
-its label; up to 10 key achievements, each 36 words; all generated resume text at
-most 800 words. The prompt targets approximately 600-750 generated words rather
-than filling every maximum. Cover letters are capped at 350 words. Actual
+Hard limits: profile 150 words; up to 14 competency items, each 26 words including
+its label; all generated resume text at most 510 words. The prompt targets
+approximately 350-480 generated words. Fixed experience and project sections also
+contribute to final pagination. Cover letters are capped at 350 words. Actual
 pagination depends on fixed sections, fonts and Word's layout engine; inspect the
 final document.
 

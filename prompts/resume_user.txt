@@ -1,11 +1,11 @@
 Use the job and complete source evidence below to tailor the generated resume sections. Python will insert the source-written professional experience and all other fixed sections. Target a complete resume of 2-3 pages.
 
 Hard word limits (stay comfortably below them):
-- career_profile: at most 140 words. Give enough context to show seniority, breadth and fit for this role; do not force it into a short generic summary.
+- career_profile: at most 150 words. Give enough context to show seniority, breadth and fit for this role; do not force it into a short generic summary.
 - areas_of_expertise: aim for 8-14 relevant competencies when evidence supports them. Each has a concise label and description, at most 26 words combined. Cite exact evidence.expertise[].id values in evidence_ids.
-- key_achievements: aim for 6-10 distinct, high-value achievements when evidence supports them. Each has a concise highlight and supporting detail, at most 36 words combined. Cite exact evidence.achievements[].id values in evidence_ids; a bullet may cite multiple related achievements.
-- All generated resume text combined: at most 800 words. Aim for approximately 600-750 generated words; the Python-rendered fixed sections also count toward the final 2-3 page target.
+- Do not generate key achievements or professional experience. Python inserts fixed role summaries and key achievements from the base resume.
+- All generated resume text combined: at most 510 words. Aim for approximately 350-480 generated words; fixed sections also count toward the final 2-3 page target.
 
 Use ATS wording from the job description naturally. Include a relevant skill when explicit evidence supports it. You may also infer a transferable competency or working familiarity when it is a clear consequence of several source facts (for example, repeated delivery across enterprise platforms can support integration or systems-analysis capability). Do not claim hands-on use of an unnamed tool, mastery, years, ownership, credentials or outcomes without evidence. Phrase uncertain adjacent capabilities cautiously or omit them.
 
-Do not repeat fixed professional experience bullets verbatim in key achievements. Prioritise distinct, measurable outcomes and preserve all source achievements marked critical. Avoid repeating the same claim across the profile, competencies and key achievements. Do not put citation IDs, section headings or fixed facts in generated prose.
+Avoid repeating fixed experience claims in the profile and competencies. Do not put citation IDs, section headings or fixed facts in generated prose.
