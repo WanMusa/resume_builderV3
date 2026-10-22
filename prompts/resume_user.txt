@@ -2,9 +2,9 @@ Use the job and complete source evidence below to tailor the generated resume se
 
 Hard word limits (stay comfortably below them):
 - career_profile: at most 150 words. Give enough context to show seniority, breadth and fit for this role; do not force it into a short generic summary.
-- areas_of_expertise: aim for 8-14 relevant competencies when evidence supports them. Each has a concise label and description, at most 26 words combined. Cite exact evidence.expertise[].id values in evidence_ids.
+- areas_of_expertise: select at most 7 relevant, distinct competencies, combining related skills when it improves clarity. Each has a concise label and description, at most 26 words combined. Cite exact evidence.expertise[].id values in evidence_ids.
 - Do not generate key achievements or professional experience. Python inserts fixed role summaries and key achievements from the base resume.
-- All generated resume text combined: at most 510 words. Aim for approximately 350-480 generated words; fixed sections also count toward the final 2-3 page target.
+- All generated resume text combined: at most 332 words. Aim for approximately 260-325 generated words; fixed sections also count toward the final 2-3 page target.
 
 Use ATS wording from the job description naturally. Include a relevant skill when explicit evidence supports it. You may also infer a transferable competency or working familiarity when it is a clear consequence of several source facts (for example, repeated delivery across enterprise platforms can support integration or systems-analysis capability). Do not claim hands-on use of an unnamed tool, mastery, years, ownership, credentials or outcomes without evidence. Phrase uncertain adjacent capabilities cautiously or omit them.
 

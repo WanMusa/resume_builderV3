@@ -557,9 +557,9 @@ Semantic correctness of arbitrary prose is **not** guaranteed by JSON
 validation; all live drafts require review.
 
 The target is about **2-3 pages**, not a guaranteed layout-engine page count.
-Hard limits: profile 150 words; up to 14 competency items, each 26 words including
-its label; all generated resume text at most 510 words. The prompt targets
-approximately 350-480 generated words. Fixed experience and project sections also
+Hard limits: profile 150 words; up to 7 competency items, each 26 words including
+its label; all generated resume text at most 332 words. The prompt targets
+approximately 260-325 generated words. Fixed experience and project sections also
 contribute to final pagination. Cover letters are capped at 350 words. Actual
 pagination depends on fixed sections, fonts and Word's layout engine; inspect the
 final document.
@@ -601,8 +601,10 @@ two Word documents using the unchanged V2 templates under
 and Aptos cover-letter formatting: career profile, expertise, professional
 experience, education/certifications, and references. Education is printed once
 (structured education records take precedence over their duplicate strings).
-Bold expertise labels and achievement highlights are paired with normal-weight
-descriptions; section and role headings stay with the following paragraph.
+Core competencies, AI project entries and experience points share the same
+indented bullet format. Each role's fixed highlights follow a bold italic
+`Key Achievements` label and a thin grey divider. The portfolio link is centered,
+italic and 12 pt. Section and role headings stay with the following paragraph.
 Fixed identity, role headers, education, certifications and references come from
 the saved package. Other source sections remain context, not an automatic appendix.
 Live documents do not include a draft banner; `needs_review` still requires review.

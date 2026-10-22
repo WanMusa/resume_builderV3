@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 from pydantic import ValidationError
 
 from app.generation import (Letter, MockProvider, OpenAIProvider, ResumeVariables,
@@ -119,7 +121,7 @@ def test_word_renders_fixed_experience_and_tailored_highlights(settings, job):
                   "AGENTIC AI & AUTOMATION SOLUTIONS", fixed["selected_projects_intro"],
                   "Telegram – Gmail Assistant", "An event-driven Gmail assistant with human approval in Telegram.",
                   "Local Web Scraping", "A Chrome extension that captures job adverts locally without an LLM.",
-                  "Further project details and demonstrations:"):
+                  "Further project details:"):
         assert value in text
     for value in ("SOURCE ROLE CONTEXT", "SOURCE PLATFORM CONTEXT", "DUPLICATE", "GENERATED DRAFT",
                   "MODEL REWRITTEN EXPERIENCE", "MODEL REWRITTEN ACHIEVEMENT", "MODEL REWRITTEN AI PROJECT",
@@ -132,15 +134,36 @@ def test_word_renders_fixed_experience_and_tailored_highlights(settings, job):
     assert str(name.runs[0].font.color.rgb) == "365F91"
     competency_bullet = next(p for p in doc.paragraphs if "Systems integration:" in p.text)
     experience_bullet = next(p for p in doc.paragraphs if "Fixed role contribution." in p.text)
+    key_heading = next(p for p in doc.paragraphs if p.text == "Key Achievements")
     assert competency_bullet.paragraph_format.left_indent == experience_bullet.paragraph_format.left_indent
     assert competency_bullet.paragraph_format.first_line_indent == experience_bullet.paragraph_format.first_line_indent
+    project_bullet = next(p for p in doc.paragraphs if "Telegram – Gmail Assistant" in p.text)
+    assert project_bullet.text.startswith("\u2022  ") and project_bullet.runs[0].bold
+    assert project_bullet.paragraph_format.left_indent == experience_bullet.paragraph_format.left_indent
+    assert project_bullet.paragraph_format.first_line_indent == experience_bullet.paragraph_format.first_line_indent
+    assert key_heading.runs[0].bold and key_heading.runs[0].italic
+    assert text.index("Key Achievements") < text.index("Fixed role contribution.")
+    further_link = next(p for p in doc.paragraphs if p.text.startswith("Further project details:"))
+    assert further_link.alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert further_link.paragraph_format.line_spacing == 1.5
+    assert further_link.paragraph_format.space_before.pt == 12
+    assert further_link.paragraph_format.space_after.pt == 12
+    further_hyperlink = further_link._p.find(qn("w:hyperlink")).find(qn("w:r"))
+    further_run_properties = further_hyperlink.find(qn("w:rPr"))
+    assert further_run_properties.find(qn("w:i")) is not None
+    assert further_run_properties.find(qn("w:sz")).get(qn("w:val")) == "24"
+    separators = [p for p in doc.paragraphs if not p.text and p._p.pPr is not None
+                  and (border := p._p.pPr.find(qn("w:pBdr"))) is not None
+                  and (bottom := border.find(qn("w:bottom"))) is not None
+                  and bottom.get(qn("w:color")) == "C9CDD2"]
+    assert len(separators) == len(fixed["experience"])
     headings = [p for p in doc.paragraphs if p.text in (
-        "CAREER PROFILE", "CORE COMPETENCIES & KEY ACHIEVEMENTS", "AGENTIC AI & AUTOMATION SOLUTIONS",
+        "CAREER PROFILE", "CORE COMPETENCIES", "AGENTIC AI & AUTOMATION SOLUTIONS",
         "PROFESSIONAL EXPERIENCE",
         "EDUCATION", "REFERENCES")]
     assert len(headings) == 6
     assert all(p.paragraph_format.keep_with_next for p in headings)
-    assert text.index("CORE COMPETENCIES & KEY ACHIEVEMENTS") < text.index("AGENTIC AI & AUTOMATION SOLUTIONS")
+    assert text.index("CORE COMPETENCIES") < text.index("AGENTIC AI & AUTOMATION SOLUTIONS")
     assert text.index("AGENTIC AI & AUTOMATION SOLUTIONS") < text.index("PROFESSIONAL EXPERIENCE")
     assert "AREAS OF EXPERTISE/HIGHLIGHTS" not in text
     template = Document(str(ROOT / "assets/templates/resume_template.docx"))
@@ -369,7 +392,7 @@ def test_combined_resume_word_budget(settings, job, monkeypatch, excess):
          "highlights": ["Fixed source experience contribution."]}
         for i in range(5)
     ]
-    base["expertise"] = [{"id": f"skill-{i}", "text": "Analysis"} for i in range(14)]
+    base["expertise"] = [{"id": f"skill-{i}", "text": "Analysis"} for i in range(7)]
     base["achievements"] = [
         {"id": f"achievement-{i}-{j}", "experience_id": f"role-{i}", "text": "Delivered analysis"}
         for i in range(5) for j in range(2)
@@ -381,7 +404,7 @@ def test_combined_resume_word_budget(settings, job, monkeypatch, excess):
         if kind != "resume":
             return original(self, kind, context, prompts, schema)
         result = {
-            "career_profile": "word " * (146 + excess),
+            "career_profile": "word " * (150 + excess),
             "areas_of_expertise": [
                 {"area": "Analysis", "description": "word " * 25, "evidence_ids": [r["id"]]}
                 for r in base["expertise"]
@@ -400,9 +423,13 @@ def test_combined_resume_word_budget(settings, job, monkeypatch, excess):
 
 def test_model_output_contains_only_profile_and_competencies(settings, job):
     _, context, prompts = prepare(job, settings)
+    context["evidence"]["expertise"] = [
+        {"id": f"skill-{index}", "text": f"Competency {index}"} for index in range(14)
+    ]
     output, _ = MockProvider().generate("resume", context, prompts, ResumeVariables)
 
     assert set(output.model_dump()) == {"career_profile", "areas_of_expertise"}
+    assert len(output.areas_of_expertise) == 7
 
 
 def test_competencies_cannot_cite_unknown_evidence(settings, job, monkeypatch):
@@ -471,7 +498,7 @@ def test_openai_schema_and_prose_response(settings, job, monkeypatch, kind, sche
             if empty_expertise:
                 assert contract["schema"]["properties"]["areas_of_expertise"]["maxItems"] == 0
             else:
-                assert contract["schema"]["properties"]["areas_of_expertise"]["maxItems"] == 14
+                assert contract["schema"]["properties"]["areas_of_expertise"]["maxItems"] == 7
                 assert definitions["Expertise"]["properties"]["evidence_ids"]["items"]["enum"] == [
                     r["id"] for r in context["evidence"]["expertise"]]
         else:

@@ -29,10 +29,12 @@ def _document(template: Path):
 
 
 def _paragraph(doc, text: str = "", *, bold: bool = False, size: int = 10,
-               font: str = FONT, after: int = 4, before: int = 0, justify: bool = False):
+               font: str = FONT, after: int = 4, before: int = 0,
+               justify: bool = False, italic: bool = False):
     paragraph = doc.add_paragraph()
     run = paragraph.add_run(text)
     run.bold = bold
+    run.italic = italic
     run.font.name = font
     run.font.size = Pt(size)
     paragraph.paragraph_format.space_before = Pt(before)
@@ -172,7 +174,7 @@ def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> 
             run = paragraph.add_run(": " + item["description"])
             run.font.name, run.font.size = FONT, Pt(10)
     else:
-        _section(doc, "CORE COMPETENCIES & KEY ACHIEVEMENTS")
+        _section(doc, "CORE COMPETENCIES")
         for item in resume["areas_of_expertise"]:
             _bullet(doc, f"{item['area']}:", item["description"])
         if version == 3 and resume.get("key_achievements"):
@@ -189,20 +191,25 @@ def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> 
         for project in projects:
             name = project.get("name", "").strip()
             description = project.get("description", "").strip()
-            if name:
-                heading = _paragraph(doc, name, bold=True, before=4, after=1)
-                if description:
-                    heading.paragraph_format.keep_with_next = True
-            if description:
-                _paragraph(doc, description, justify=True, after=3)
+            if name and description:
+                _bullet(doc, f"{name}:", description)
+            elif name or description:
+                _bullet(doc, name or description, "")
             for highlight in project.get("highlights", []):
                 _bullet(doc, highlight, "")
         project_url = fixed.get("selected_projects_url") if version == 4 else resume.get("selected_projects_url")
         if project_url:
             paragraph = _paragraph(
-                doc, "Further project details and demonstrations: ", after=8,
+                doc, "Further project details: ", size=12, before=12, after=12,
             )
-            _hyperlink(paragraph, "musakamil.com", project_url, FONT, 10)
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            paragraph.paragraph_format.line_spacing = 1.5
+            paragraph.runs[0].italic = True
+            _hyperlink(paragraph, "musakamil.com", project_url, FONT, 12)
+            link_run = paragraph._p.find(qn("w:hyperlink")).find(qn("w:r"))
+            italic = OxmlElement("w:i")
+            italic.set(qn("w:val"), "1")
+            link_run.find(qn("w:rPr")).append(italic)
     _section(doc, "PROFESSIONAL EXPERIENCE")
     experience = fixed.get("experience", resume["experience"]) if version == 4 else resume["experience"]
     for role in experience:
@@ -221,8 +228,21 @@ def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> 
                 _bullet(doc, achievement["highlight"], achievement["detail"])
         else:
             _paragraph(doc, role["summary"], justify=True, after=6)
-            for highlight in role.get("highlights", []):
-                _bullet(doc, highlight, "")
+            highlights = role.get("highlights", [])
+            if highlights:
+                achievement_heading = _paragraph(doc, "Key Achievements", bold=True, italic=True, after=1)
+                achievement_heading.paragraph_format.keep_with_next = True
+                for highlight in highlights:
+                    _bullet(doc, highlight, "")
+        separator = doc.add_paragraph()
+        separator.paragraph_format.space_before = Pt(7)
+        separator.paragraph_format.space_after = Pt(7)
+        border = OxmlElement("w:pBdr")
+        bottom = OxmlElement("w:bottom")
+        for name, value in (("val", "single"), ("sz", "4"), ("space", "1"), ("color", "C9CDD2")):
+            bottom.set(qn(f"w:{name}"), value)
+        border.append(bottom)
+        separator._p.get_or_add_pPr().append(border)
     _section(doc, "EDUCATION")
     for education in fixed.get("education_records") or fixed.get("education", []) if version == 4 else resume.get("education_records") or resume.get("education", []):
         if isinstance(education, str):

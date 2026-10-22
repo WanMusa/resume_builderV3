@@ -35,7 +35,7 @@ class Expertise(StrictOutput):
 
 class ResumeVariables(StrictOutput):
     career_profile: Text
-    areas_of_expertise: Annotated[list[Expertise], Field(max_length=14)]
+    areas_of_expertise: Annotated[list[Expertise], Field(max_length=7)]
 
 
 class Letter(StrictOutput):
@@ -111,7 +111,7 @@ class MockProvider:
                 "areas_of_expertise": [
                     {"area": " ".join(r["text"].split()[:3]),
                      "description": " ".join(r["text"].split()[:17]), "evidence_ids": [r["id"]]}
-                    for r in evidence["expertise"][:14]
+                    for r in evidence["expertise"][:7]
                 ],
             }
         else:
