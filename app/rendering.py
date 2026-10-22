@@ -97,18 +97,30 @@ def _hyperlink(paragraph, label: str, url: str, font: str, size: int):
 
 def _identity(doc, identity: dict, *, cover: bool = False, tags=()):
     font, size = ("Aptos", 11) if cover else (FONT, 10)
-    name = _paragraph(doc, identity["name"], bold=True, size=11 if cover else 18, font=font)
-    if not cover:
-        name.runs[0].font.color.rgb = BLUE
-        if tags:
-            _paragraph(doc, "  |  ".join(tags), bold=True, after=2)
-    elif identity.get("location"):
-        _paragraph(doc, identity["location"], font=font, size=size)
-    contact = _paragraph(doc, font=font, size=size, after=12 if cover else 6)
+    if cover:
+        _paragraph(doc, identity["name"], bold=True, size=12, font=font, after=0)
+        for key in ("location", "email", "mobile", "website"):
+            value = identity.get(key)
+            if not value:
+                continue
+            paragraph = _paragraph(doc, font=font, size=size, after=0)
+            if key == "email":
+                _hyperlink(paragraph, value, f"mailto:{value}", font, size)
+            elif key == "website":
+                label = value.removeprefix("https://").removeprefix("www.").rstrip("/")
+                _hyperlink(paragraph, label, value, font, size)
+            else:
+                run = paragraph.add_run(value)
+                run.font.name, run.font.size = font, Pt(size)
+        return
+
+    name = _paragraph(doc, identity["name"], bold=True, size=18, font=font)
+    name.runs[0].font.color.rgb = BLUE
+    if tags:
+        _paragraph(doc, "  |  ".join(tags), bold=True, after=2)
+    contact = _paragraph(doc, font=font, size=size, after=6)
     parts = []
     for key in ("email", "mobile", "location", "linkedin", "website"):
-        if cover and key in ("location", "linkedin", "website"):
-            continue
         value = identity.get(key)
         if value:
             if parts:
@@ -129,9 +141,6 @@ def _identity(doc, identity: dict, *, cover: bool = False, tags=()):
     if not parts and identity.get("contact"):
         run = contact.add_run(identity["contact"])
         run.font.name, run.font.size = font, Pt(size)
-    if cover and identity.get("linkedin"):
-        _hyperlink(_paragraph(doc, font=font, size=size), "LinkedIn",
-                   identity["linkedin"], font, size)
 
 
 def _right_date(doc, paragraph, text: str):
@@ -272,9 +281,14 @@ def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> 
     letter = _document(assets_dir / "templates" / "cover_letter_template.docx")
     _banner(letter, package)
     _identity(letter, resume["identity"], cover=True)
-    _paragraph(letter, date.today().strftime("%d %B %Y").lstrip("0"), font="Aptos", size=11)
+    _paragraph(letter, font="Aptos", size=11, after=0)
+    _paragraph(letter, date.today().strftime("%d %B %Y").lstrip("0"),
+               font="Aptos", size=11, after=0)
+    _paragraph(letter, font="Aptos", size=11, after=0)
     if job and job.get("company"):
-        _paragraph(letter, job["company"], font="Aptos", size=11)
+        _paragraph(letter, job["company"], font="Aptos", size=11, after=0)
+        _paragraph(letter, font="Aptos", size=11, after=0)
+        _paragraph(letter, font="Aptos", size=11, after=0)
     _paragraph(letter, "Dear Hiring Manager,", font="Aptos", size=11, after=10)
     for text in package["cover_letter"]["paragraphs"]:
         _paragraph(letter, text, font="Aptos", size=11, after=10, justify=True)

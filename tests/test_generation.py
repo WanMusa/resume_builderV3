@@ -1,6 +1,7 @@
 import copy
 import json
 import shutil
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,6 +110,9 @@ def test_word_renders_fixed_experience_and_tailored_highlights(settings, job):
     resume["experience"][0]["summary"] = "MODEL REWRITTEN EXPERIENCE"
     resume["experience"][0]["highlights"] = ["MODEL REWRITTEN ACHIEVEMENT"]
     resume["selected_projects"][0]["description"] = "MODEL REWRITTEN AI PROJECT"
+    resume["identity"].update(email="candidate@example.com", mobile="1234",
+                               location="Example City", linkedin="https://example.com/profile",
+                               website="https://musakamil.com/")
     package["source_resume"]["fixed"]["career_profile"] = "SOURCE PROFILE CONTEXT"
     package["provenance"].update(provider="openai", is_example=False)
     package["review_required"] = True
@@ -175,8 +179,26 @@ def test_word_renders_fixed_experience_and_tailored_highlights(settings, job):
     letter = Document(BytesIO(files[filenames(package, job)[1]]))
     letter_text = "\n".join(p.text for p in letter.paragraphs)
     assert job["company"] in letter_text and "Dear Hiring Manager," in letter_text
+    assert "LinkedIn" not in letter_text and "|" not in letter_text
     assert all(p in letter_text for p in package["cover_letter"]["paragraphs"])
     assert any(r.font.name == "Aptos" for p in letter.paragraphs for r in p.runs)
+    assert letter.paragraphs[:12][0].text == resume["identity"]["name"]
+    assert [paragraph.text for paragraph in letter.paragraphs[:12]] == [
+        resume["identity"]["name"], "Example City", "candidate@example.com", "1234",
+        "musakamil.com", "", date.today().strftime("%d %B %Y").lstrip("0"), "",
+        job["company"], "", "",
+        "Dear Hiring Manager,",
+    ]
+    for paragraph in letter.paragraphs[:5]:
+        assert paragraph.paragraph_format.line_spacing == 1.0
+        assert paragraph.paragraph_format.space_before.pt == 0
+        assert paragraph.paragraph_format.space_after.pt == 0
+    assert letter.paragraphs[0].runs[0].font.size.pt == 12
+    letter_links = [relation.target_ref for relation in letter.part.rels.values()
+                    if relation.is_external]
+    assert "mailto:candidate@example.com" in letter_links
+    assert "https://musakamil.com/" in letter_links
+    assert "https://example.com/profile" not in letter_links
 
 
 def test_filenames_follow_v2_without_directories(settings, job):
@@ -544,7 +566,10 @@ def test_supabase_signed_download_url_is_short_lived_and_same_origin(monkeypatch
 
     def post(self, url, **kwargs):
         calls.append((url, kwargs))
-        return httpx.Response(200, json={"signedURL": "/object/sign/private-artifacts/Candidate-Resume.docx?token=temporary"})
+        filename = url.rsplit("/", 1)[-1]
+        return httpx.Response(200, json={
+            "signedURL": f"/object/sign/private-artifacts/{filename}?token=temporary"
+        })
 
     monkeypatch.setattr(httpx.Client, "post", post)
     monkeypatch.setattr(SupabaseStorage, "check_bucket", lambda self: None)
@@ -555,6 +580,10 @@ def test_supabase_signed_download_url_is_short_lived_and_same_origin(monkeypatch
     assert signed_url == "https://storage.example/storage/v1/object/sign/private-artifacts/Candidate-Resume.docx?token=temporary"
     assert calls[0][1]["json"] == {"expiresIn": 300}
     assert calls[0][1]["headers"]["apikey"] == "test-only"
+    cover_letter_url = storage.signed_download_url(
+        "Candidate-Role-Company-Cover Letter.docx", download=True,
+    )
+    assert "download=Candidate-Role-Company-Cover+Letter.docx" in cover_letter_url
     with pytest.raises(ValueError, match="safe root-level"):
         storage.signed_download_url("../private/Resume.docx")
 

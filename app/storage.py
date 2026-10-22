@@ -1,6 +1,6 @@
 """Private storage adapters. Persist object keys, never expiring signed URLs."""
 
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlsplit, urlunsplit
 
 import httpx
 
@@ -49,10 +49,12 @@ class SupabaseStorage:
         return {"backend": "supabase", "bucket": settings.supabase_bucket,
                 "object_key": key, "local_path": None}
 
-    def signed_download_url(self, key: str, expires_in: int = 300) -> str:
-        if (not key.endswith("-Resume.docx") or any(c in key for c in '/\\:*?"<>|')
+    def signed_download_url(self, key: str, expires_in: int = 300,
+                            download: bool = False) -> str:
+        if (not (key.endswith("-Resume.docx") or key.endswith("-Cover Letter.docx"))
+                or any(c in key for c in '/\\:*?"<>|')
                 or any(ord(c) < 32 for c in key)):
-            raise ValueError("Resume artifact must have a safe root-level Word filename")
+            raise ValueError("Artifact must have a safe root-level Word filename")
         try:
             self.check_bucket()
         except httpx.HTTPError:
@@ -88,6 +90,11 @@ class SupabaseStorage:
         parsed = urlparse(result)
         if parsed.scheme != "https" or parsed.netloc != configured.netloc:
             raise RuntimeError("Storage provider returned a signed link for an unexpected origin")
+        if download:
+            parts = urlsplit(result)
+            query = parse_qsl(parts.query, keep_blank_values=True)
+            query.append(("download", key))
+            result = urlunsplit(parts._replace(query=urlencode(query)))
         return result
 
 

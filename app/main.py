@@ -192,7 +192,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 Artifact.bucket == settings.supabase_bucket,
             ).order_by(Artifact.created_at.desc())
         ))
+        cover_letter_artifacts = list(db.scalars(
+            select(Artifact).where(
+                Artifact.job_id.in_(job_ids),
+                Artifact.kind == "cover_letter",
+                Artifact.backend == "supabase",
+                Artifact.bucket == settings.supabase_bucket,
+            ).order_by(Artifact.created_at.desc())
+        ))
         available_resumes = {artifact.job_id for artifact in resume_artifacts}
+        available_cover_letters = {artifact.job_id for artifact in cover_letter_artifacts}
         terminal = {"completed", "needs_review", "failed"}
         return [{
             "id": job.id,
@@ -204,6 +213,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "created_at": job.created_at,
             "updated_at": job.updated_at,
             "resume_available": job.id in available_resumes,
+            "cover_letter_available": job.id in available_cover_letters,
             "can_regenerate": job.id in checkpoints and job.status in terminal,
             "can_retry": job.status == "failed" and job.id not in checkpoints,
         } for job in jobs]
@@ -249,6 +259,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             url = get_storage(settings).signed_download_url(artifact.object_key, expires_in=300)
         except (RuntimeError, ValueError):
             raise HTTPException(502, "Could not create a resume download link") from None
+        return {"url": url, "expires_in": 300}
+
+    @job_runs_router.get("/{job_id}/cover-letter-url")
+    def job_run_cover_letter_url(job_id: str, db=Depends(session)):
+        job = db.get(Job, job_id)
+        if job is None:
+            raise HTTPException(404, "Job not found")
+        artifact = db.scalar(select(Artifact).where(
+            Artifact.job_id == job_id,
+            Artifact.kind == "cover_letter",
+            Artifact.backend == "supabase",
+            Artifact.bucket == settings.supabase_bucket,
+        ).order_by(Artifact.created_at.desc()))
+        if artifact is None:
+            raise HTTPException(404, "Cover letter document is not available")
+        try:
+            url = get_storage(settings).signed_download_url(
+                artifact.object_key, expires_in=300, download=True,
+            )
+        except (RuntimeError, ValueError):
+            raise HTTPException(502, "Could not create a cover letter download link") from None
         return {"url": url, "expires_in": 300}
 
     app.include_router(router)

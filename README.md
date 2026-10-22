@@ -445,9 +445,11 @@ New outputs are Word documents, not Markdown.
 The extension's Job Runs view uses a separate `JOB_RUNS_API_TOKEN`, never the
 broader inbox/operator `API_TOKEN`. It exposes only the latest 50 job summaries,
 retry for failed jobs without a generation checkpoint, explicitly confirmed
-regeneration, and resume download-link creation. `GET /job-runs/{id}/resume-url`
-returns a five-minute signed URL for a private Supabase object; the bucket stays
-private. The public routes are under `/resume/job-runs` through the shared proxy.
+regeneration, and on-demand download links for available resumes and cover letters.
+`GET /job-runs/{id}/resume-url` and `GET /job-runs/{id}/cover-letter-url` return
+five-minute signed URLs for private Supabase objects; cover-letter links request
+download. The bucket stays private. The public routes are under `/resume/job-runs`
+through the shared proxy.
 
 Configure a unique random `JOB_RUNS_API_TOKEN` as a GitHub Actions secret and
 redeploy. In the extension Settings, set the Job Runs API base URL to

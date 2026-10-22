@@ -142,6 +142,7 @@ def test_job_runs_token_is_separate_and_list_exposes_only_run_summary(client):
         "created_at": response.json()[0]["created_at"],
         "updated_at": response.json()[0]["updated_at"],
         "resume_available": False,
+        "cover_letter_available": False,
         "can_regenerate": False,
         "can_retry": False,
     }]
@@ -187,6 +188,8 @@ def test_job_runs_retry_regenerate_and_signed_resume_link(client, monkeypatch):
     assert client.post(f"{route}/retry", headers=HEADERS).status_code == 401
     retried = client.post(f"{route}/retry", headers=JOB_RUNS_HEADERS)
     assert retried.status_code == 202 and retried.json()["status"] == "queued"
+    assert client.get(f"{route}/cover-letter-url", headers=HEADERS).status_code == 401
+    assert client.get(f"{route}/cover-letter-url", headers=JOB_RUNS_HEADERS).status_code == 404
 
     with Session(client.app.state.engine) as session:
         job = session.get(Job, job_id)
@@ -195,19 +198,32 @@ def test_job_runs_retry_regenerate_and_signed_resume_link(client, monkeypatch):
         session.add(Artifact(job_id=job_id, kind="resume", filename="Candidate-Role-Company-Resume.docx",
                              backend="supabase", bucket="private-artifacts",
                              object_key="Candidate-Role-Company-Resume.docx"))
+        session.add(Artifact(job_id=job_id, kind="cover_letter",
+                     filename="Candidate-Role-Company-Cover Letter.docx",
+                     backend="supabase", bucket="private-artifacts",
+                     object_key="Candidate-Role-Company-Cover Letter.docx"))
         session.commit()
 
     monkeypatch.setattr(
         "app.storage.SupabaseStorage.signed_download_url",
-        lambda self, key, expires_in: f"https://storage.example/signed/{key}?ttl={expires_in}",
+        lambda self, key, expires_in, download=False:
+            f"https://storage.example/signed/{key}?ttl={expires_in}"
+            + ("&download=true" if download else ""),
     )
     listed = client.get("/job-runs", headers=JOB_RUNS_HEADERS).json()[0]
     assert listed["resume_available"] is True and listed["can_regenerate"] is True
+    assert listed["cover_letter_available"] is True
     assert client.get(f"{route}/resume-url", headers=HEADERS).status_code == 401
     download = client.get(f"{route}/resume-url", headers=JOB_RUNS_HEADERS)
     assert download.status_code == 200
     assert download.json() == {
         "url": "https://storage.example/signed/Candidate-Role-Company-Resume.docx?ttl=300",
+        "expires_in": 300,
+    }
+    cover_letter = client.get(f"{route}/cover-letter-url", headers=JOB_RUNS_HEADERS)
+    assert cover_letter.status_code == 200
+    assert cover_letter.json() == {
+        "url": "https://storage.example/signed/Candidate-Role-Company-Cover Letter.docx?ttl=300&download=true",
         "expires_in": 300,
     }
     assert client.post(f"{route}/regenerate", headers=JOB_RUNS_HEADERS).status_code == 400
