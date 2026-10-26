@@ -612,11 +612,11 @@ the saved package. Other source sections remain context, not an automatic append
 Live documents do not include a draft banner; `needs_review` still requires review.
 Mock/example documents retain their NOT FOR SUBMISSION banner.
 
-V2 filename convention (invalid filename characters are stripped):
+Filename convention (invalid filename characters are stripped):
 
 ```text
-CandidateName-JobTitle-Company-Resume.docx
-CandidateName-JobTitle-Company-Cover Letter.docx
+Company-Resume-JobTitle-CandidateName.docx
+Company-Cover Letter-JobTitle-CandidateName.docx
 ```
 
 Both files are uploaded directly to the configured bucket **root**: no job,

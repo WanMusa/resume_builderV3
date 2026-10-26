@@ -51,9 +51,16 @@ class SupabaseStorage:
 
     def signed_download_url(self, key: str, expires_in: int = 300,
                             download: bool = False) -> str:
-        if (not (key.endswith("-Resume.docx") or key.endswith("-Cover Letter.docx"))
-                or any(c in key for c in '/\\:*?"<>|')
-                or any(ord(c) < 32 for c in key)):
+        if (
+            not key.endswith(".docx")
+            or not (
+                key.endswith(("-Resume.docx", "-Cover Letter.docx"))
+                or "-Resume-" in key
+                or "-Cover Letter-" in key
+            )
+            or any(c in key for c in '/\\:*?"<>|')
+            or any(ord(c) < 32 for c in key)
+        ):
             raise ValueError("Artifact must have a safe root-level Word filename")
         try:
             self.check_bucket()

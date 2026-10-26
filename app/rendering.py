@@ -295,10 +295,13 @@ def render_package(package: dict, assets_dir: Path, job: dict | None = None) -> 
     _paragraph(letter, "Kind regards,", font="Aptos", size=11)
     _paragraph(letter, resume["identity"]["name"], bold=True, font="Aptos", size=11)
     job = job or {}
-    parts = [resume["identity"]["name"], job.get("title") or "Role",
-             job.get("company") or "Organisation"]
+    parts = [job.get("company") or "Organisation", job.get("title") or "Role",
+             resume["identity"]["name"]]
     safe_parts = [re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", part).strip() for part in parts]
     if not all(safe_parts):
         raise ValueError("Candidate, position and organisation must produce nonempty filenames")
-    prefix = "-".join(safe_parts)
-    return {f"{prefix}-Resume.docx": _bytes(doc), f"{prefix}-Cover Letter.docx": _bytes(letter)}
+    company, position, candidate = safe_parts
+    return {
+        f"{company}-Resume-{position}-{candidate}.docx": _bytes(doc),
+        f"{company}-Cover Letter-{position}-{candidate}.docx": _bytes(letter),
+    }

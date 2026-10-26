@@ -177,9 +177,11 @@ def process_one(session_factory, settings) -> bool:
                 if artifact is None:
                     artifact = Artifact(job_id=job_id, filename=filename)
                     session.add(artifact)
-                artifact.kind = ("resume" if filename.endswith("-Resume.docx") else
-                                 "cover_letter" if filename.endswith("-Cover Letter.docx") else
-                                 Path(filename).stem)
+                is_resume = filename.endswith("-Resume.docx") or "-Resume-" in filename
+                is_cover_letter = (filename.endswith("-Cover Letter.docx") or
+                                   "-Cover Letter-" in filename)
+                artifact.kind = ("resume" if is_resume else
+                                 "cover_letter" if is_cover_letter else Path(filename).stem)
                 artifact.backend = metadata["backend"]
                 artifact.bucket = metadata.get("bucket")
                 artifact.object_key = metadata["object_key"]

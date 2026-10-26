@@ -34,8 +34,9 @@ def job():
 
 
 def filenames(package, job):
-    prefix = f'{package["resume"]["identity"]["name"]}-{job["title"]}-{job["company"]}'
-    return [f"{prefix}-Resume.docx", f"{prefix}-Cover Letter.docx"]
+    candidate = package["resume"]["identity"]["name"]
+    return [f'{job["company"]}-Resume-{job["title"]}-{candidate}.docx',
+            f'{job["company"]}-Cover Letter-{job["title"]}-{candidate}.docx']
 
 
 def test_mock_package_fixed_facts_render_and_storage(settings, job, tmp_path, monkeypatch):
@@ -201,14 +202,14 @@ def test_word_renders_fixed_experience_and_tailored_highlights(settings, job):
     assert "https://example.com/profile" not in letter_links
 
 
-def test_filenames_follow_v2_without_directories(settings, job):
+def test_filenames_are_company_first_without_directories(settings, job):
     package = generate_package(job, settings)
     package["resume"]["identity"]["name"] = "A/B: Candidate"
     files = render_package(package, ROOT / "assets",
                            {**job, "title": 'Senior: Analyst / AI', "company": 'A|B "Ltd"'})
     assert set(files) == {
-        "AB Candidate-Senior Analyst  AI-AB Ltd-Resume.docx",
-        "AB Candidate-Senior Analyst  AI-AB Ltd-Cover Letter.docx",
+        "AB Ltd-Resume-Senior Analyst  AI-AB Candidate.docx",
+        "AB Ltd-Cover Letter-Senior Analyst  AI-AB Candidate.docx",
     }
     assert all("/" not in name and "\\" not in name for name in files)
 
@@ -575,17 +576,20 @@ def test_supabase_signed_download_url_is_short_lived_and_same_origin(monkeypatch
     monkeypatch.setattr(SupabaseStorage, "check_bucket", lambda self: None)
     storage = SupabaseStorage(settings)
 
-    signed_url = storage.signed_download_url("Candidate-Resume.docx")
+    signed_url = storage.signed_download_url("Company-Resume-Role-Wan Musa.docx")
 
-    assert signed_url == "https://storage.example/storage/v1/object/sign/private-artifacts/Candidate-Resume.docx?token=temporary"
+    assert signed_url == "https://storage.example/storage/v1/object/sign/private-artifacts/Company-Resume-Role-Wan Musa.docx?token=temporary"
     assert calls[0][1]["json"] == {"expiresIn": 300}
     assert calls[0][1]["headers"]["apikey"] == "test-only"
     cover_letter_url = storage.signed_download_url(
-        "Candidate-Role-Company-Cover Letter.docx", download=True,
+        "Company-Cover Letter-Role-Wan Musa.docx", download=True,
     )
-    assert "download=Candidate-Role-Company-Cover+Letter.docx" in cover_letter_url
+    assert "download=Company-Cover+Letter-Role-Wan+Musa.docx" in cover_letter_url
+    storage.signed_download_url("Candidate-Role-Company-Resume.docx")
     with pytest.raises(ValueError, match="safe root-level"):
         storage.signed_download_url("../private/Resume.docx")
+    with pytest.raises(ValueError, match="safe root-level"):
+        storage.signed_download_url("Company-Resume-Role-Wan Musa.pdf")
 
 
 def test_supabase_signed_download_url_rejects_foreign_origins(monkeypatch):

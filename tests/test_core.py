@@ -693,8 +693,8 @@ def test_checkpoint_to_word_to_supabase_without_llm_or_local_files(database, pay
     assert process_one(factory, settings)
     assert get_job(factory).status == "needs_review"
     assert len(uploaded) == 2
-    assert any(name.endswith("-Resume.docx") for name in uploaded)
-    assert any(name.endswith("-Cover Letter.docx") for name in uploaded)
+    assert any("-Resume-" in name for name in uploaded)
+    assert any("-Cover Letter-" in name for name in uploaded)
     assert not settings.data_dir.exists()
     assert not list(settings.assets_dir.parent.glob("*.docx"))
     with factory() as session:
