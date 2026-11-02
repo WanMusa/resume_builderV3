@@ -578,7 +578,7 @@ def test_supabase_signed_download_url_is_short_lived_and_same_origin(monkeypatch
 
     signed_url = storage.signed_download_url("Company-Resume-Role-Wan Musa.docx")
 
-    assert signed_url == "https://storage.example/storage/v1/object/sign/private-artifacts/Company-Resume-Role-Wan Musa.docx?token=temporary"
+    assert signed_url == "https://storage.example/storage/v1/object/sign/private-artifacts/Company-Resume-Role-Wan%20Musa.docx?token=temporary"
     assert calls[0][1]["json"] == {"expiresIn": 300}
     assert calls[0][1]["headers"]["apikey"] == "test-only"
     cover_letter_url = storage.signed_download_url(

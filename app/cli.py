@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import time
 
 from app.config import Settings
@@ -9,6 +10,7 @@ from app.worker import process_one
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="Resume Builder operator CLI")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("init-db", help="Bootstrap tables in the dedicated app database")

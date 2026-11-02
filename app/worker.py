@@ -1,9 +1,12 @@
+import logging
 from datetime import timedelta
 from pathlib import Path
+from time import perf_counter
 
 from sqlalchemy import and_, delete, or_, select, update
 
 from app.models import Artifact, GeneratedDocument, Job, new_id, utcnow
+from app.observability import emit_event
 
 
 ACTIVE_STATES = ("generating", "rendered", "uploaded")
@@ -114,15 +117,27 @@ def process_one(session_factory, settings) -> bool:
     if claimed is None:
         return False
     job_id, token = claimed["id"], claimed["token"]
+    job_started = perf_counter()
+    stage = "storage_check"
+    emit_event("job.started", job_id=job_id)
     try:
         storage = get_storage(settings)
+        stage_started = perf_counter()
+        emit_event("stage.started", job_id=job_id, stage=stage)
         storage.check_bucket()
+        emit_event("stage.completed", job_id=job_id, stage=stage,
+                   duration_ms=round((perf_counter() - stage_started) * 1000, 1))
         with session_factory() as session:
             document = session.scalar(select(GeneratedDocument).where(GeneratedDocument.job_id == job_id))
             package = document.package if document else None
         if package is None or package.get("regeneration_requested"):
             previous = package
+            stage = "generate"
+            stage_started = perf_counter()
+            emit_event("stage.started", job_id=job_id, stage=stage)
             package = generate_package(claimed["payload"], settings)
+            emit_event("stage.completed", job_id=job_id, stage=stage,
+                       duration_ms=round((perf_counter() - stage_started) * 1000, 1))
             if not isinstance(package, dict) or not all(key in package for key in ("resume", "cover_letter", "provenance")):
                 raise ValueError("Generated package requires resume, cover_letter, and provenance")
             with session_factory() as session:
@@ -144,7 +159,13 @@ def process_one(session_factory, settings) -> bool:
         with session_factory() as session:
             _fence(session, job_id, token, settings)
             session.commit()
+        stage = "render"
+        stage_started = perf_counter()
+        emit_event("stage.started", job_id=job_id, stage=stage)
         documents = render_package(package, settings.assets_dir, claimed["payload"])
+        emit_event("stage.completed", job_id=job_id, stage=stage,
+                   duration_ms=round((perf_counter() - stage_started) * 1000, 1),
+                   artifact_count=len(documents))
         if not documents:
             raise ValueError("Renderer produced no artifacts")
         with session_factory() as session:
@@ -154,6 +175,9 @@ def process_one(session_factory, settings) -> bool:
                 Artifact.bucket == settings.supabase_bucket,
             ))}
             session.commit()
+        stage = "upload"
+        stage_started = perf_counter()
+        emit_event("stage.started", job_id=job_id, stage=stage)
         for filename, content in documents.items():
             if filename in existing:
                 continue
@@ -187,6 +211,9 @@ def process_one(session_factory, settings) -> bool:
                 artifact.object_key = metadata["object_key"]
                 artifact.local_path = metadata.get("local_path")
                 session.commit()
+            emit_event("stage.completed", job_id=job_id, stage=stage,
+                   duration_ms=round((perf_counter() - stage_started) * 1000, 1),
+                   artifact_count=len(documents))
         with session_factory() as session:
             _fence(session, job_id, token, settings, status="uploaded")
             session.commit()
@@ -197,9 +224,15 @@ def process_one(session_factory, settings) -> bool:
                 lease_until=None, lease_token=None,
             ))
             session.commit()
+        emit_event("job.completed", job_id=job_id, status=final_status,
+                   duration_ms=round((perf_counter() - job_started) * 1000, 1))
     except LostLease:
-        pass
+        emit_event("job.lease_lost", level=logging.WARNING, job_id=job_id, stage=stage)
     except Exception as exc:
+        error_code = (exc.reason if isinstance(exc, EvidenceValidationError) else
+                      "package_format" if isinstance(exc, PackageFormatError) else None)
+        emit_event("job.attempt_failed", level=logging.ERROR, job_id=job_id, stage=stage,
+                   error_type=type(exc).__name__, error_code=error_code)
         with session_factory() as session:
             try:
                 _fence(session, job_id, token, settings)

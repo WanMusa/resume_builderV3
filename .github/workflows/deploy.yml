@@ -70,6 +70,10 @@ jobs:
           config = json.load(sys.stdin)
           api = config["services"]["api"]
           environment = api["environment"]
+          for name in ("api", "worker", "importer"):
+              labels = config["services"][name]["labels"]
+              assert labels["com.ai-platform.observability"] == "true"
+              assert labels["com.ai-platform.app"] == "resume-builder-v3"
           assert environment["VIRTUAL_HOST"] == "wanagents.duckdns.org"
           assert environment["LETSENCRYPT_HOST"] == environment["VIRTUAL_HOST"]
           assert environment["VIRTUAL_PORT"] == "8000"

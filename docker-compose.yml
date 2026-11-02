@@ -2,6 +2,9 @@ x-app: &app
   build: .
   env_file: .env
   restart: unless-stopped
+  labels:
+    com.ai-platform.observability: "true"
+    com.ai-platform.app: "resume-builder-v3"
   init: true
   read_only: true
   tmpfs:
