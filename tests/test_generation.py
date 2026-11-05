@@ -567,10 +567,11 @@ def test_supabase_signed_download_url_is_short_lived_and_same_origin(monkeypatch
 
     def post(self, url, **kwargs):
         calls.append((url, kwargs))
-        filename = url.rsplit("/", 1)[-1]
-        return httpx.Response(200, json={
+        filename = kwargs["json"]["paths"][0]
+        return httpx.Response(200, json=[{
+            "path": filename, "error": None,
             "signedURL": f"/object/sign/private-artifacts/{filename}?token=temporary"
-        })
+        }])
 
     monkeypatch.setattr(httpx.Client, "post", post)
     monkeypatch.setattr(SupabaseStorage, "check_bucket", lambda self: None)
@@ -579,7 +580,10 @@ def test_supabase_signed_download_url_is_short_lived_and_same_origin(monkeypatch
     signed_url = storage.signed_download_url("Company-Resume-Role-Wan Musa.docx")
 
     assert signed_url == "https://storage.example/storage/v1/object/sign/private-artifacts/Company-Resume-Role-Wan%20Musa.docx?token=temporary"
-    assert calls[0][1]["json"] == {"expiresIn": 300}
+    assert calls[0][0] == "https://storage.example/storage/v1/object/sign/private-artifacts"
+    assert calls[0][1]["json"] == {
+        "expiresIn": 300, "paths": ["Company-Resume-Role-Wan Musa.docx"],
+    }
     assert calls[0][1]["headers"]["apikey"] == "test-only"
     cover_letter_url = storage.signed_download_url(
         "Company-Cover Letter-Role-Wan Musa.docx", download=True,
@@ -597,10 +601,62 @@ def test_supabase_signed_download_url_rejects_foreign_origins(monkeypatch):
                                supabase_key="test-only", supabase_bucket="private-artifacts")
     monkeypatch.setattr(SupabaseStorage, "check_bucket", lambda self: None)
     monkeypatch.setattr(httpx.Client, "post", lambda *args, **kwargs: httpx.Response(
-        200, json={"signedURL": "https://attacker.example/file.docx"},
+        200, json=[{"path": "Candidate-Resume.docx", "error": None,
+                    "signedURL": "https://attacker.example/file.docx?token=temporary"}],
     ))
 
     with pytest.raises(RuntimeError, match="unexpected origin"):
+        SupabaseStorage(settings).signed_download_url("Candidate-Resume.docx")
+
+
+@pytest.mark.parametrize("kind", ["Resume", "Cover Letter"])
+@pytest.mark.parametrize("prefix", ["", "/storage/v1", "https://storage.example/storage/v1"])
+@pytest.mark.parametrize("filename", [
+    "R&D #1 100% %23 + Māori-{kind}-Senior BA-Wan Musa.docx",
+    "MacroActive-{kind}-Agent Factory Lead - AI Systems & Automation-Wan Musa.docx",
+])
+def test_supabase_signed_download_preserves_exact_filename_and_token(monkeypatch, kind, prefix, filename):
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    key = filename.format(kind=kind)
+    token = "header.payload.signature-with_underscores"
+    settings = SimpleNamespace(supabase_url="https://storage.example",
+                               supabase_key="test-only", supabase_bucket="private-artifacts")
+    monkeypatch.setattr(SupabaseStorage, "check_bucket", lambda self: None)
+
+    def post(self, url, **kwargs):
+        # Unlike signing a URI, JSON carries literal reserved characters intact.
+        assert url == "https://storage.example/storage/v1/object/sign/private-artifacts"
+        assert kwargs["json"] == {"expiresIn": 300, "paths": [key]}
+        return httpx.Response(200, json=[{
+            "path": key, "error": None,
+            "signedURL": f"{prefix}/object/sign/private-artifacts/{key}?token={token}",
+        }])
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    url = SupabaseStorage(settings).signed_download_url(key, download=True)
+    parsed = urlsplit(url)
+    assert parsed.scheme == "https" and parsed.netloc == "storage.example"
+    assert unquote(parsed.path) == f"/storage/v1/object/sign/private-artifacts/{key}"
+    assert parsed.fragment == ""
+    assert parse_qs(parsed.query) == {"token": [token], "download": [key]}
+    assert "?token=" + token + "&download=" in url
+
+
+@pytest.mark.parametrize("payload", [
+    [], {}, [None],
+    [{"path": "Candidate-Resume.docx", "error": "Object not found", "signedURL": None}],
+    [{"path": "Other-Resume.docx", "error": None, "signedURL": "/object/sign/file?token=temporary"}],
+    [{"path": "Candidate-Resume.docx", "error": None, "signedURL": None}],
+    [{"path": "Candidate-Resume.docx", "error": None, "signedURL": "/object/sign/file"}],
+    [{"path": "Candidate-Resume.docx", "error": None, "signedURL": "/object/sign/file?token=bad&other=value"}],
+])
+def test_supabase_signed_download_rejects_invalid_results(monkeypatch, payload):
+    settings = SimpleNamespace(supabase_url="https://storage.example",
+                               supabase_key="test-only", supabase_bucket="private-artifacts")
+    monkeypatch.setattr(SupabaseStorage, "check_bucket", lambda self: None)
+    monkeypatch.setattr(httpx.Client, "post", lambda *args, **kwargs: httpx.Response(200, json=payload))
+    with pytest.raises(RuntimeError, match="signed link"):
         SupabaseStorage(settings).signed_download_url("Candidate-Resume.docx")
 
 

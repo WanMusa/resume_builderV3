@@ -451,6 +451,14 @@ five-minute signed URLs for private Supabase objects; cover-letter links request
 download. The bucket stays private. The public routes are under `/resume/job-runs`
 through the shared proxy.
 
+Download signing sends the exact object key in the JSON `paths` array to
+Supabase's batch signing endpoint (one object per request). The returned token
+is kept unchanged, while the download path is built from the stored object key
+with each path segment encoded once. This prevents reserved filename characters
+such as `&`, `#`, `+`, and `%` from changing the signed object path. Existing
+documents do not need regeneration after deploying this download-only change;
+click the extension action again to obtain a fresh five-minute link.
+
 Configure a unique random `JOB_RUNS_API_TOKEN` as a GitHub Actions secret and
 redeploy. In the extension Settings, set the Job Runs API base URL to
 `https://wanagents.duckdns.org` and enter that token in the separate Job Runs API

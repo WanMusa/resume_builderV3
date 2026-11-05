@@ -1,6 +1,6 @@
 """Private storage adapters. Persist object keys, never expiring signed URLs."""
 
-from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 
@@ -68,11 +68,13 @@ class SupabaseStorage:
             raise RuntimeError("Storage private-bucket check failed") from None
         settings = self.settings
         storage_root = f"{settings.supabase_url.rstrip('/')}/storage/v1"
-        url = (f"{storage_root}/object/sign/"
-               f"{quote(settings.supabase_bucket, safe='')}/{quote(key, safe='')}")
+        # Sign the exact object key in JSON. The single-object endpoint derives
+        # its signed claim from the request URI, whose reserved-character
+        # decoding can differ from the decoded object name used for downloads.
+        url = f"{storage_root}/object/sign/{quote(settings.supabase_bucket, safe='')}"
         try:
             with httpx.Client(timeout=20) as client:
-                response = client.post(url, json={"expiresIn": expires_in}, headers={
+                response = client.post(url, json={"expiresIn": expires_in, "paths": [key]}, headers={
                     "Authorization": "Bearer " + settings.supabase_key,
                     "apikey": settings.supabase_key,
                 })
@@ -80,28 +82,32 @@ class SupabaseStorage:
             raise RuntimeError("Storage signed-link request failed") from None
         if not response.is_success:
             raise RuntimeError(f"Storage signed-link request returned HTTP {response.status_code}")
-        signed_url = response.json().get("signedURL")
+        payload = response.json()
+        if (not isinstance(payload, list) or len(payload) != 1
+                or not isinstance(payload[0], dict) or payload[0].get("error")
+                or payload[0].get("path") != key):
+            raise RuntimeError("Storage provider returned no signed link for the requested object")
+        signed_url = payload[0].get("signedURL")
         if not isinstance(signed_url, str) or not signed_url:
             raise RuntimeError("Storage provider returned no signed link")
-        provider_url = urlparse(signed_url)
+        # Supabase may return an unescaped object name, including '#' or '%'.
+        # Separate the token before URL parsing so filename characters cannot
+        # become fragments, query delimiters, or another layer of escaping.
+        provider_path, separator, token = signed_url.rpartition("?token=")
+        if not separator or not token or any(c not in
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_." for c in token):
+            raise RuntimeError("Storage provider returned an invalid signed link")
+        provider_url = urlparse(provider_path)
         configured = urlparse(settings.supabase_url)
         if provider_url.scheme or provider_url.netloc:
             if provider_url.scheme != "https" or provider_url.netloc != configured.netloc:
                 raise RuntimeError("Storage provider returned a signed link for an unexpected origin")
-            result = signed_url
-        else:
-            relative = signed_url.lstrip("/")
-            result = (f"{settings.supabase_url.rstrip('/')}/{relative}"
-                      if relative.startswith("storage/v1/")
-                      else f"{storage_root}/{relative}")
-        parsed = urlparse(result)
-        if parsed.scheme != "https" or parsed.netloc != configured.netloc:
-            raise RuntimeError("Storage provider returned a signed link for an unexpected origin")
+        # Construct the path from the authoritative key, encoding each segment
+        # exactly once. Keep the provider-issued token unchanged.
+        result = (f"{storage_root}/object/sign/{quote(settings.supabase_bucket, safe='')}/"
+                  f"{quote(key, safe='')}?token={token}")
         if download:
-            parts = urlsplit(result)
-            query = parse_qsl(parts.query, keep_blank_values=True)
-            query.append(("download", key))
-            result = urlunsplit(parts._replace(query=urlencode(query)))
+            result += "&" + urlencode({"download": key})
         return result
 
 
